@@ -1,0 +1,317 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  demo.cid - configured IED description used by the examples in this repository.
+
+  The file is self-authored against IEC 61850-6 (SCL, 2007 revision B). It is a
+  CID: the Communication section binds the single access point to a concrete
+  address, so an example can start a server and point a client at it without a
+  further engineering step.
+
+  Model summary (MMS domain name = IED name + LD inst = "DemoIEDLD0"):
+
+    LLN0    Mod / Beh / Health / NamPlt, data sets dsMeas and dsStatus,
+            report control blocks urcbMeas (unbuffered) and brcbMeas
+            (buffered), GOOSE control block gcbStatus
+    LPHD1   PhyNam / PhyHealth / Proxy
+    MMXU1   TotW / Hz / PhV (WYE of three CMV phases)
+    GGIO1   Ind1 - Ind4 (SPS) and SPCSO1 (SPC, direct-with-normal-security)
+
+  Mod and Beh are modeled status-only (ENS). The only control point in the
+  model is GGIO1.SPCSO1, which holds the control service surface of the
+  examples to a single object. It carries SBO, SBOw, Oper and Cancel, so all
+  four control models of IEC 61850-7-2 are reachable and discoverable.
+
+  Both report control blocks carry indexed="false", so the instantiated names
+  are urcbMeas and brcbMeas rather than the indexed urcbMeas01 and urcbMeas02
+  that the SCL default would produce.
+-->
+<SCL xmlns="http://www.iec.ch/61850/2003/SCL"
+     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+     version="2007" revision="B" release="4">
+
+  <Header id="DemoIED" nameStructure="IEDName" version="1" revision="1" toolID="iec61850-rust"/>
+
+  <Communication>
+    <SubNetwork name="SN1" type="8-MMS">
+      <ConnectedAP iedName="DemoIED" apName="AP1">
+        <Address>
+          <P type="IP">127.0.0.1</P>
+          <P type="IP-SUBNET">255.0.0.0</P>
+          <P type="MMS-Port">102</P>
+          <P type="OSI-AP-Title">1,1,9999,1</P>
+          <P type="OSI-AE-Qualifier">12</P>
+          <P type="OSI-PSEL">00000001</P>
+          <P type="OSI-SSEL">0001</P>
+          <P type="OSI-TSEL">0001</P>
+        </Address>
+        <!--
+          The GOOSE control block is bound here: a subscriber needs the
+          multicast address, the APPID and the VLAN tag, none of which the
+          GSEControl element itself carries. The values match what the
+          goose_publisher and goose_subscriber examples use.
+        -->
+        <GSE ldInst="LD0" cbName="gcbStatus">
+          <Address>
+            <P type="MAC-Address">01-0C-CD-01-00-01</P>
+            <P type="APPID">1000</P>
+            <P type="VLAN-ID">000</P>
+            <P type="VLAN-PRIORITY">4</P>
+          </Address>
+          <MinTime unit="s" multiplier="m">10</MinTime>
+          <MaxTime unit="s" multiplier="m">1000</MaxTime>
+        </GSE>
+      </ConnectedAP>
+    </SubNetwork>
+  </Communication>
+
+  <IED name="DemoIED" desc="Demonstration IED for the iec61850-rust examples"
+       manufacturer="rust61850" type="iec61850-rust" configVersion="1.0">
+    <Services>
+      <DynAssociation/>
+      <GetDirectory/>
+      <GetDataObjectDefinition/>
+      <GetDataSetValue/>
+      <DataSetDirectory/>
+      <ReadWrite/>
+      <ConfReportControl max="2"/>
+      <GetCBValues/>
+      <ReportSettings cbName="Fix" datSet="Fix" rptID="Fix" optFields="Fix" bufTime="Dyn" trgOps="Dyn" intgPd="Dyn"/>
+      <GSESettings cbName="Fix" datSet="Fix" appID="Fix"/>
+      <ConfLNs fixPrefix="true" fixLnInst="true"/>
+    </Services>
+    <AccessPoint name="AP1">
+      <Server>
+        <Authentication/>
+        <LDevice inst="LD0" desc="Demonstration logical device">
+          <LN0 lnClass="LLN0" inst="" lnType="LLN0_T">
+            <!-- Measurement data set: the payload of urcbMeas and brcbMeas. -->
+            <DataSet name="dsMeas" desc="Measured values reported by urcbMeas and brcbMeas">
+              <FCDA ldInst="LD0" prefix="" lnClass="MMXU" lnInst="1" doName="TotW" daName="mag.f" fc="MX"/>
+              <FCDA ldInst="LD0" prefix="" lnClass="MMXU" lnInst="1" doName="Hz" daName="mag.f" fc="MX"/>
+              <FCDA ldInst="LD0" prefix="" lnClass="MMXU" lnInst="1" doName="PhV.phsA" daName="cVal.mag.f" fc="MX"/>
+            </DataSet>
+
+            <!-- Status data set: the payload of the GOOSE control block. -->
+            <DataSet name="dsStatus" desc="Binary status points published by gcbStatus">
+              <FCDA ldInst="LD0" prefix="" lnClass="GGIO" lnInst="1" doName="Ind1" daName="stVal" fc="ST"/>
+              <FCDA ldInst="LD0" prefix="" lnClass="GGIO" lnInst="1" doName="Ind2" daName="stVal" fc="ST"/>
+              <FCDA ldInst="LD0" prefix="" lnClass="GGIO" lnInst="1" doName="Ind3" daName="stVal" fc="ST"/>
+              <FCDA ldInst="LD0" prefix="" lnClass="GGIO" lnInst="1" doName="Ind4" daName="stVal" fc="ST"/>
+            </DataSet>
+
+            <ReportControl name="urcbMeas" desc="Unbuffered reports on dsMeas"
+                           rptID="DemoIEDLD0/LLN0$RP$urcbMeas" datSet="dsMeas"
+                           buffered="false" indexed="false"
+                           bufTime="100" intgPd="1000" confRev="1">
+              <TrgOps dchg="true" qchg="true" dupd="false" period="true" gi="true"/>
+              <OptFields seqNum="true" timeStamp="true" dataSet="true" reasonCode="true"
+                         dataRef="true" entryID="false" configRef="true" bufOvfl="false"/>
+              <RptEnabled max="2"/>
+            </ReportControl>
+
+            <ReportControl name="brcbMeas" desc="Buffered reports on dsMeas"
+                           rptID="DemoIEDLD0/LLN0$BR$brcbMeas" datSet="dsMeas"
+                           buffered="true" indexed="false"
+                           bufTime="100" intgPd="0" confRev="1">
+              <TrgOps dchg="true" qchg="true" dupd="false" period="false" gi="true"/>
+              <OptFields seqNum="true" timeStamp="true" dataSet="true" reasonCode="true"
+                         dataRef="true" entryID="true" configRef="true" bufOvfl="true"/>
+              <RptEnabled max="2"/>
+            </ReportControl>
+
+            <DOI name="NamPlt">
+              <DAI name="vendor"><Val>rust61850</Val></DAI>
+              <DAI name="swRev"><Val>0.1.0</Val></DAI>
+              <DAI name="d"><Val>iec61850-rust demonstration IED</Val></DAI>
+              <DAI name="configRev"><Val>1.0</Val></DAI>
+              <DAI name="ldNs"><Val>IEC 61850-7-4:2007B</Val></DAI>
+            </DOI>
+
+            <GSEControl name="gcbStatus" desc="GOOSE publication of dsStatus"
+                        appID="DemoIED/LLN0$GO$gcbStatus" datSet="dsStatus"
+                        confRev="1" type="GOOSE" fixedOffs="false"/>
+          </LN0>
+
+          <LN prefix="" lnClass="LPHD" inst="1" lnType="LPHD_T">
+            <DOI name="PhyNam">
+              <DAI name="vendor"><Val>rust61850</Val></DAI>
+              <DAI name="hwRev"><Val>1.0</Val></DAI>
+              <DAI name="swRev"><Val>0.1.0</Val></DAI>
+              <DAI name="serNum"><Val>DEMO-0001</Val></DAI>
+              <DAI name="model"><Val>iec61850-rust</Val></DAI>
+            </DOI>
+          </LN>
+
+          <LN prefix="" lnClass="MMXU" inst="1" lnType="MMXU_T"/>
+
+          <LN prefix="" lnClass="GGIO" inst="1" lnType="GGIO_T">
+            <DOI name="SPCSO1">
+              <DAI name="ctlModel"><Val>direct-with-normal-security</Val></DAI>
+            </DOI>
+          </LN>
+        </LDevice>
+      </Server>
+    </AccessPoint>
+  </IED>
+
+  <DataTypeTemplates>
+
+    <LNodeType id="LLN0_T" lnClass="LLN0">
+      <DO name="Mod" type="BehModKind_T"/>
+      <DO name="Beh" type="BehModKind_T"/>
+      <DO name="Health" type="Health_T"/>
+      <DO name="NamPlt" type="LPL_T"/>
+    </LNodeType>
+
+    <LNodeType id="LPHD_T" lnClass="LPHD">
+      <DO name="PhyNam" type="DPL_T"/>
+      <DO name="PhyHealth" type="Health_T"/>
+      <DO name="Proxy" type="SPS_T"/>
+    </LNodeType>
+
+    <LNodeType id="MMXU_T" lnClass="MMXU">
+      <DO name="TotW" type="MV_T"/>
+      <DO name="Hz" type="MV_T"/>
+      <DO name="PhV" type="WYE_T"/>
+    </LNodeType>
+
+    <LNodeType id="GGIO_T" lnClass="GGIO">
+      <DO name="Ind1" type="SPS_T"/>
+      <DO name="Ind2" type="SPS_T"/>
+      <DO name="Ind3" type="SPS_T"/>
+      <DO name="Ind4" type="SPS_T"/>
+      <DO name="SPCSO1" type="SPC_T"/>
+    </LNodeType>
+
+    <DOType id="BehModKind_T" cdc="ENS" desc="Mode and behaviour indication">
+      <DA name="stVal" fc="ST" bType="Enum" type="BehModKind" dchg="true"/>
+      <DA name="q" fc="ST" bType="Quality" qchg="true"/>
+      <DA name="t" fc="ST" bType="Timestamp"/>
+    </DOType>
+
+    <DOType id="Health_T" cdc="ENS" desc="Health indication">
+      <DA name="stVal" fc="ST" bType="Enum" type="HealthKind" dchg="true"/>
+      <DA name="q" fc="ST" bType="Quality" qchg="true"/>
+      <DA name="t" fc="ST" bType="Timestamp"/>
+    </DOType>
+
+    <DOType id="LPL_T" cdc="LPL" desc="Logical node name plate">
+      <DA name="vendor" fc="DC" bType="VisString255"/>
+      <DA name="swRev" fc="DC" bType="VisString255"/>
+      <DA name="d" fc="DC" bType="VisString255"/>
+      <DA name="configRev" fc="DC" bType="VisString255"/>
+      <DA name="ldNs" fc="EX" bType="VisString255"/>
+    </DOType>
+
+    <DOType id="DPL_T" cdc="DPL" desc="Physical device name plate">
+      <DA name="vendor" fc="DC" bType="VisString255"/>
+      <DA name="hwRev" fc="DC" bType="VisString255"/>
+      <DA name="swRev" fc="DC" bType="VisString255"/>
+      <DA name="serNum" fc="DC" bType="VisString255"/>
+      <DA name="model" fc="DC" bType="VisString255"/>
+    </DOType>
+
+    <DOType id="SPS_T" cdc="SPS" desc="Single point status">
+      <DA name="stVal" fc="ST" bType="BOOLEAN" dchg="true"/>
+      <DA name="q" fc="ST" bType="Quality" qchg="true"/>
+      <DA name="t" fc="ST" bType="Timestamp"/>
+    </DOType>
+
+    <DOType id="MV_T" cdc="MV" desc="Measured value">
+      <DA name="mag" fc="MX" bType="Struct" type="AnalogValue_T" dchg="true"/>
+      <DA name="q" fc="MX" bType="Quality" qchg="true"/>
+      <DA name="t" fc="MX" bType="Timestamp"/>
+    </DOType>
+
+    <DOType id="CMV_T" cdc="CMV" desc="Complex measured value">
+      <DA name="cVal" fc="MX" bType="Struct" type="Vector_T" dchg="true"/>
+      <DA name="q" fc="MX" bType="Quality" qchg="true"/>
+      <DA name="t" fc="MX" bType="Timestamp"/>
+    </DOType>
+
+    <DOType id="WYE_T" cdc="WYE" desc="Phase-to-ground related measured values">
+      <SDO name="phsA" type="CMV_T"/>
+      <SDO name="phsB" type="CMV_T"/>
+      <SDO name="phsC" type="CMV_T"/>
+    </DOType>
+
+    <DOType id="SPC_T" cdc="SPC" desc="Controllable single point">
+      <DA name="SBO" fc="CO" bType="ObjRef"/>
+      <DA name="SBOw" fc="CO" bType="Struct" type="SPCCmd_T"/>
+      <DA name="Oper" fc="CO" bType="Struct" type="SPCCmd_T"/>
+      <DA name="Cancel" fc="CO" bType="Struct" type="Cancel_SPC_T"/>
+      <DA name="ctlModel" fc="CF" bType="Enum" type="CtlModelKind" dchg="true"/>
+      <DA name="origin" fc="ST" bType="Struct" type="Originator_T"/>
+      <DA name="ctlNum" fc="ST" bType="INT8U"/>
+      <DA name="stVal" fc="ST" bType="BOOLEAN" dchg="true"/>
+      <DA name="q" fc="ST" bType="Quality" qchg="true"/>
+      <DA name="t" fc="ST" bType="Timestamp"/>
+    </DOType>
+
+    <DAType id="AnalogValue_T">
+      <BDA name="f" bType="FLOAT32"/>
+    </DAType>
+
+    <DAType id="Vector_T">
+      <BDA name="mag" bType="Struct" type="AnalogValue_T"/>
+      <BDA name="ang" bType="Struct" type="AnalogValue_T"/>
+    </DAType>
+
+    <DAType id="Originator_T">
+      <BDA name="orCat" bType="Enum" type="OrCatKind"/>
+      <BDA name="orIdent" bType="Octet64"/>
+    </DAType>
+
+    <DAType id="SPCCmd_T">
+      <BDA name="ctlVal" bType="BOOLEAN"/>
+      <BDA name="origin" bType="Struct" type="Originator_T"/>
+      <BDA name="ctlNum" bType="INT8U"/>
+      <BDA name="T" bType="Timestamp"/>
+      <BDA name="Test" bType="BOOLEAN"/>
+      <BDA name="Check" bType="Check"/>
+    </DAType>
+
+    <DAType id="Cancel_SPC_T">
+      <BDA name="ctlVal" bType="BOOLEAN"/>
+      <BDA name="origin" bType="Struct" type="Originator_T"/>
+      <BDA name="ctlNum" bType="INT8U"/>
+      <BDA name="T" bType="Timestamp"/>
+      <BDA name="Test" bType="BOOLEAN"/>
+    </DAType>
+
+    <EnumType id="BehModKind">
+      <EnumVal ord="1">on</EnumVal>
+      <EnumVal ord="2">blocked</EnumVal>
+      <EnumVal ord="3">test</EnumVal>
+      <EnumVal ord="4">test/blocked</EnumVal>
+      <EnumVal ord="5">off</EnumVal>
+    </EnumType>
+
+    <EnumType id="HealthKind">
+      <EnumVal ord="1">Ok</EnumVal>
+      <EnumVal ord="2">Warning</EnumVal>
+      <EnumVal ord="3">Alarm</EnumVal>
+    </EnumType>
+
+    <EnumType id="CtlModelKind">
+      <EnumVal ord="0">status-only</EnumVal>
+      <EnumVal ord="1">direct-with-normal-security</EnumVal>
+      <EnumVal ord="2">sbo-with-normal-security</EnumVal>
+      <EnumVal ord="3">direct-with-enhanced-security</EnumVal>
+      <EnumVal ord="4">sbo-with-enhanced-security</EnumVal>
+    </EnumType>
+
+    <EnumType id="OrCatKind">
+      <EnumVal ord="0">not-supported</EnumVal>
+      <EnumVal ord="1">bay-control</EnumVal>
+      <EnumVal ord="2">station-control</EnumVal>
+      <EnumVal ord="3">remote-control</EnumVal>
+      <EnumVal ord="4">automatic-bay</EnumVal>
+      <EnumVal ord="5">automatic-station</EnumVal>
+      <EnumVal ord="6">automatic-remote</EnumVal>
+      <EnumVal ord="7">maintenance</EnumVal>
+      <EnumVal ord="8">process</EnumVal>
+    </EnumType>
+
+  </DataTypeTemplates>
+</SCL>

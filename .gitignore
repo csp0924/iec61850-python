@@ -1,0 +1,19 @@
+target/
+# Pinned only for local development: the lock records a git revision of
+# iec61850-rust that the published repository does not carry yet.
+Cargo.lock
+*.so
+*.pyd
+*.pdb
+*.dylib
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+.venv/
+.pypirc
+# Local development override pointing at a sibling iec61850-rust checkout.
+.cargo/config.toml

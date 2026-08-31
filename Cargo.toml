@@ -1,0 +1,34 @@
+[package]
+name = "iec61850-pyo3"
+# Keep in step with `version` in pyproject.toml.
+version = "0.13.0"
+edition = "2021"
+rust-version = "1.88"
+authors = ["Cheng Sin Pang"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/csp0924/iec61850-python"
+publish = false
+description = "Python bindings for the iec61850-rust IEC 61850 stack, distributed on PyPI as `iec61850`"
+
+[lib]
+# Python imports this as `iec61850._native`.
+name = "_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+iec61850-client = { git = "https://github.com/csp0924/iec61850-rust", tag = "v0.1.0", features = ["tls"] }
+iec61850-model  = { git = "https://github.com/csp0924/iec61850-rust", tag = "v0.1.0" }
+iec61850-mms    = { git = "https://github.com/csp0924/iec61850-rust", tag = "v0.1.0" }
+iec61850-scl    = { git = "https://github.com/csp0924/iec61850-rust", tag = "v0.1.0" }
+iec61850-server = { git = "https://github.com/csp0924/iec61850-rust", tag = "v0.1.0" }
+iec61850-sntp   = { git = "https://github.com/csp0924/iec61850-rust", tag = "v0.1.0" }
+iec61850-tls    = { git = "https://github.com/csp0924/iec61850-rust", tag = "v0.1.0" }
+
+rustls              = { version = "0.23", default-features = false, features = ["ring", "tls12"] }
+tokio               = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
+pyo3                = { version = "0.28", features = ["extension-module", "abi3-py311"] }
+pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
+
+# `release_max_level_off` compiles out every `event!` in the transitive
+# `tracing` users, so a release build carries no `module_path!()` literal.
+tracing             = { version = "0.1", features = ["release_max_level_off"] }

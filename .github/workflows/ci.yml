@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  wheel:
+    name: wheel (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x86_64
+          - os: windows-latest
+            target: windows-x86_64
+          - os: macos-14
+            target: macos-arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Sync the development environment
+        run: uv sync
+
+      # An abi3 wheel built against 3.11 serves every later interpreter.
+      - name: Build the extension module
+        run: uv run maturin build --release --out dist
+
+      - name: Install the built wheel
+        shell: bash
+        run: uv pip install --reinstall dist/*.whl
+
+      - name: Test
+        run: uv run --no-sync pytest -q
+
+      - name: Import check on a clean install
+        run: uv run --no-sync python tests/_sdist_smoke.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.target }}
+          path: dist/*.whl
+
+  develop:
+    name: develop build and cookbook
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Sync the development environment
+        run: uv sync
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Build the extension module in place
+        run: uv run maturin develop --release
+
+      - name: Test
+        run: uv run --no-sync pytest -q
+
+      # The cookbook recipes that host their own server run without arguments
+      # and without network access. Excluded: 01 and 02 need the address of a
+      # running server, 03 idles until interrupted, and 13 has to reach an
+      # SNTP server.
+      - name: Run the self-contained examples
+        working-directory: examples
+        run: |
+          for script in 04_host_server_programmatic.py \
+                        05_control_direct_operate.py \
+                        06_control_select_operate.py \
+                        07_reporting_unbuffered.py \
+                        08_reporting_buffered.py \
+                        09_dataset_dynamic.py \
+                        10_setting_groups.py \
+                        11_journal_log.py \
+                        12_tls_secured_session.py; do
+            echo "== $script"
+            uv run --no-sync --project .. python "$script"
+          done
