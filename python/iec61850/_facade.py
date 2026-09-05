@@ -15,6 +15,7 @@ from ._dataclasses import (
     DataSetDirectory,
     DataSetMember,
     Iec61850ClientConfig,
+    IsoConnectionParameters,
     JournalEntry,
     OriginValue,
     Quality,
@@ -445,13 +446,20 @@ class IedConnection:
         request_timeout_ms: int | None = None,
         max_outstanding: int | None = None,
         local_max_pdu_size: int | None = None,
+        iso: IsoConnectionParameters | None = None,
     ) -> "IedConnection":
+        """Open an association with ``addr``, given as ``"host:port"``.
+
+        ``iso`` replaces the ISO addressing the association offers; ``None``
+        keeps the IEC 61850-8-1 Annex A defaults.
+        """
         native = await _native.IedConnection.connect(
             addr,
             timeout_ms=timeout_ms,
             request_timeout_ms=request_timeout_ms,
             max_outstanding=max_outstanding,
             local_max_pdu_size=local_max_pdu_size,
+            iso=iso.to_native() if iso is not None else None,
         )
         self = cls.__new__(cls)
         self._native_conn = native
@@ -468,7 +476,13 @@ class IedConnection:
         request_timeout_ms: int | None = None,
         max_outstanding: int | None = None,
         local_max_pdu_size: int | None = None,
+        iso: IsoConnectionParameters | None = None,
     ) -> "IedConnection":
+        """Open a TLS-protected association with ``addr``.
+
+        ``iso`` replaces the ISO addressing the association offers; ``None``
+        keeps the IEC 61850-8-1 Annex A defaults.
+        """
         native = await _native.IedConnection.connect_tls(
             addr,
             server_name=server_name,
@@ -487,6 +501,7 @@ class IedConnection:
             request_timeout_ms=request_timeout_ms,
             max_outstanding=max_outstanding,
             local_max_pdu_size=local_max_pdu_size,
+            iso=iso.to_native() if iso is not None else None,
         )
         self = cls.__new__(cls)
         self._native_conn = native
@@ -916,6 +931,7 @@ class Iec61850Client:
             "request_timeout_ms": cfg.request_timeout_ms,
             "max_outstanding": cfg.max_outstanding,
             "local_max_pdu_size": cfg.local_max_pdu_size,
+            "iso": cfg.iso,
         }
         if cfg.tls is None:
             conn = await IedConnection.connect(addr, **tuning)

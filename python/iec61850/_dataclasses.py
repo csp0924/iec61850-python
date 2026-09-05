@@ -308,6 +308,122 @@ class DataAccessFailure:
     error: str
 
 
+# Selector length limits: ISO 8073 bounds the T-Selector at 4 octets, ISO 8327-1
+# the S-Selector and ISO 8823-1 the P-Selector at 16 each.
+_T_SELECTOR_MAX_LEN = 4
+_S_SELECTOR_MAX_LEN = 16
+_P_SELECTOR_MAX_LEN = 16
+
+# OBJECT IDENTIFIER bounds of ISO 8825-1: at least two arcs, a first arc of at
+# most 2, a second arc of at most 39 unless the first is 2, and arcs that fit
+# the 32-bit range this package encodes.
+_OID_MIN_ARCS = 2
+_OID_FIRST_ARC_MAX = 2
+_OID_SECOND_ARC_MAX = 39
+_OID_ARC_MAX = 0xFFFFFFFF
+
+# AE-qualifier is an ISO 8650 INTEGER carried as a 32-bit signed value.
+_AE_QUALIFIER_MIN = -(2**31)
+_AE_QUALIFIER_MAX = 2**31 - 1
+
+
+def _check_selector(name: str, value: bytes, max_len: int) -> None:
+    """Reject a selector that is not bytes or exceeds its layer's length."""
+    if not isinstance(value, (bytes, bytearray)):
+        raise ValueError(f"{name} must be bytes, got {type(value).__name__}")
+    if len(value) > max_len:
+        raise ValueError(
+            f"{name} is {len(value)} bytes, at most {max_len} are allowed"
+        )
+
+
+def _check_ap_title(name: str, value: str | None) -> None:
+    """Reject an AP-title that is not a dotted, encodable OBJECT IDENTIFIER."""
+    if value is None:
+        return
+    if not isinstance(value, str):
+        raise ValueError(f"{name} must be a dotted OID string or None")
+    arcs = []
+    for part in value.split("."):
+        if not part.isdigit():
+            raise ValueError(f"{name} arc '{part}' is not a decimal number")
+        arc = int(part)
+        if arc > _OID_ARC_MAX:
+            raise ValueError(f"{name} arc {arc} does not fit in 32 bits")
+        arcs.append(arc)
+    if len(arcs) < _OID_MIN_ARCS:
+        raise ValueError(f"{name} needs at least {_OID_MIN_ARCS} arcs, got {len(arcs)}")
+    first, second = arcs[0], arcs[1]
+    if first > _OID_FIRST_ARC_MAX or (
+        first < _OID_FIRST_ARC_MAX and second > _OID_SECOND_ARC_MAX
+    ):
+        raise ValueError(f"{name} arcs {first}.{second} are outside the encodable range")
+
+
+def _check_ae_qualifier(name: str, value: int | None) -> None:
+    """Reject an AE-qualifier outside the signed 32-bit range."""
+    if value is None:
+        return
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f"{name} must be an int or None")
+    if not _AE_QUALIFIER_MIN <= value <= _AE_QUALIFIER_MAX:
+        raise ValueError(f"{name} {value} does not fit in a signed 32-bit integer")
+
+
+@dataclass(frozen=True, slots=True)
+class IsoConnectionParameters:
+    """ISO addressing offered when a client opens an association.
+
+    ``local_*`` names the calling side and ``remote_*`` the called side. The
+    defaults are the values IEC 61850-8-1 Annex A lists for an MMS association:
+    T-Selector ``00 01``, S-Selector ``00 01``, P-Selector ``00 00 00 01``, and
+    an AP-title with an AE-qualifier present on both sides. An AP-title of
+    ``None`` leaves that field out of the ACSE AARQ.
+
+    Pass an instance to ``IedConnection.connect()`` or ``connect_tls()`` to
+    address a server that expects selectors other than the defaults.
+    """
+
+    local_t_sel: bytes = b"\x00\x01"
+    remote_t_sel: bytes = b"\x00\x01"
+    local_s_sel: bytes = b"\x00\x01"
+    remote_s_sel: bytes = b"\x00\x01"
+    local_p_sel: bytes = b"\x00\x00\x00\x01"
+    remote_p_sel: bytes = b"\x00\x00\x00\x01"
+    local_ap_title: str | None = "1.1.1.999"
+    remote_ap_title: str | None = "1.1.1.999.1"
+    local_ae_qualifier: int | None = 12
+    remote_ae_qualifier: int | None = 12
+
+    def __post_init__(self) -> None:
+        """Validate every field, raising ``ValueError`` on the first offender."""
+        _check_selector("local_t_sel", self.local_t_sel, _T_SELECTOR_MAX_LEN)
+        _check_selector("remote_t_sel", self.remote_t_sel, _T_SELECTOR_MAX_LEN)
+        _check_selector("local_s_sel", self.local_s_sel, _S_SELECTOR_MAX_LEN)
+        _check_selector("remote_s_sel", self.remote_s_sel, _S_SELECTOR_MAX_LEN)
+        _check_selector("local_p_sel", self.local_p_sel, _P_SELECTOR_MAX_LEN)
+        _check_selector("remote_p_sel", self.remote_p_sel, _P_SELECTOR_MAX_LEN)
+        _check_ap_title("local_ap_title", self.local_ap_title)
+        _check_ap_title("remote_ap_title", self.remote_ap_title)
+        _check_ae_qualifier("local_ae_qualifier", self.local_ae_qualifier)
+        _check_ae_qualifier("remote_ae_qualifier", self.remote_ae_qualifier)
+
+    def to_native(self) -> dict[str, Any]:
+        """Return the mapping the native ``connect`` entry points accept."""
+        return {
+            "local_t_sel": bytes(self.local_t_sel),
+            "remote_t_sel": bytes(self.remote_t_sel),
+            "local_s_sel": bytes(self.local_s_sel),
+            "remote_s_sel": bytes(self.remote_s_sel),
+            "local_p_sel": bytes(self.local_p_sel),
+            "remote_p_sel": bytes(self.remote_p_sel),
+            "local_ap_title": self.local_ap_title,
+            "remote_ap_title": self.remote_ap_title,
+            "local_ae_qualifier": self.local_ae_qualifier,
+            "remote_ae_qualifier": self.remote_ae_qualifier,
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class TlsConfig:
     """TLS configuration for ``IedConnection.connect_tls()``.
@@ -341,7 +457,9 @@ class Iec61850ClientConfig:
     ``timeout_ms`` is the deadline wrapping the entire connect handshake
     (TCP + ISO stack + MMS Initiate, plus TLS when applicable).
     ``request_timeout_ms`` / ``max_outstanding`` / ``local_max_pdu_size`` apply
-    after the connection is established and tune per-request behavior.
+    after the connection is established and tune per-request behavior. ``iso``
+    replaces the ISO addressing the association offers; ``None`` keeps the
+    IEC 61850-8-1 Annex A defaults.
     """
 
     address: str
@@ -353,6 +471,7 @@ class Iec61850ClientConfig:
     tls: TlsConfig | None = None
     tls_server_name: str | None = None
     report_dispatcher_interval_ms: int | None = 100
+    iso: IsoConnectionParameters | None = None
 
 
 # TypeSpec is a recursive MMS type descriptor surfaced as a nested dict.

@@ -27,6 +27,18 @@ class IedError(Exception):
 class IedConnectionError(IedError):
     """TCP / OSI stack connection failure."""
 
+class IedSessionRefusedError(IedConnectionError):
+    """Peer answered the connect request with a session REFUSE SPDU.
+
+    ``reason_code`` is PI 50 of the RF SPDU, ``transport_disconnect`` PI 17,
+    and ``provider_reason`` the provider-reason of the CPR PPDU the refusal
+    carries. Each is ``None`` when the refusal omits it.
+    """
+
+    reason_code: int | None
+    transport_disconnect: int | None
+    provider_reason: int | None
+
 class IedTimeoutError(IedError):
     """Operation exceeded its deadline."""
 
@@ -121,6 +133,7 @@ class IedConnection:
         request_timeout_ms: int | None = ...,
         max_outstanding: int | None = ...,
         local_max_pdu_size: int | None = ...,
+        iso: dict[str, Any] | None = ...,
     ) -> Awaitable[IedConnection]: ...
     @classmethod
     def connect_tls(
@@ -143,6 +156,7 @@ class IedConnection:
         request_timeout_ms: int | None = ...,
         max_outstanding: int | None = ...,
         local_max_pdu_size: int | None = ...,
+        iso: dict[str, Any] | None = ...,
     ) -> Awaitable[IedConnection]: ...
     def disconnect(self) -> Awaitable[None]: ...
     def abort(self) -> Awaitable[None]: ...

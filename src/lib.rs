@@ -28,8 +28,13 @@ use iec61850_client::{
     RcbWriteMask as RustRcbWriteMask, ReportOptFlds as RustReportOptFlds,
     TriggerOptions as RustTriggerOptions,
 };
+use iec61850_mms::iso::session::SSelector as RustSSelector;
 use iec61850_mms::mms::pdu::common::DataAccessError as RustDataAccessError;
 use iec61850_mms::TypeSpecification as RustTypeSpec;
+use iec61850_mms::{
+    ApTitle as RustApTitle, IsoConnectionParameters as RustIsoConnectionParameters,
+    PSelector as RustPSelector, TSelector as RustTSelector,
+};
 use iec61850_model::builder::{
     DataObjectBuilder as RustDoBuilder, IedModelBuilder as RustIedModelBuilder,
     LogicalDeviceBuilder as RustLdBuilder, LogicalNodeBuilder as RustLnBuilder,
@@ -111,6 +116,12 @@ create_exception!(
 );
 create_exception!(
     _native,
+    IedSessionRefusedError,
+    IedConnectionError,
+    "Peer answered the connect request with a session REFUSE SPDU."
+);
+create_exception!(
+    _native,
     IedTimeoutError,
     IedError,
     "Operation exceeded its deadline."
@@ -158,11 +169,47 @@ enum ErrCtx {
     Service,
 }
 
+/// Builds the exception a session REFUSE SPDU surfaces as.
+///
+/// The three parameters the refusal carries are attached to the exception
+/// instance, each an ``int`` or ``None``, so a caller can branch on the reason
+/// without parsing the message text.
+fn session_refused_error(
+    message: String,
+    reason_code: Option<u8>,
+    transport_disconnect: Option<u8>,
+    provider_reason: Option<u8>,
+) -> PyErr {
+    let err = IedSessionRefusedError::new_err(message);
+    Python::attach(|py| -> PyResult<()> {
+        let value = err.value(py);
+        value.setattr("reason_code", reason_code)?;
+        value.setattr("transport_disconnect", transport_disconnect)?;
+        value.setattr("provider_reason", provider_reason)?;
+        Ok(())
+    })
+    .err()
+    .unwrap_or(err)
+}
+
 fn map_client_error(err: ClientError, ctx: ErrCtx) -> PyErr {
     match (err, ctx) {
         (ClientError::NotConnected, _) => {
             IedConnectionError::new_err("IedConnection is not connected")
         }
+        (
+            err @ ClientError::SessionRefused {
+                reason_code,
+                transport_disconnect,
+                provider_reason,
+            },
+            _,
+        ) => session_refused_error(
+            err.to_string(),
+            reason_code,
+            transport_disconnect,
+            provider_reason,
+        ),
         (err, ErrCtx::Connect) => IedConnectionError::new_err(err.to_string()),
         (err @ ClientError::TypeMismatch { .. }, _) => IedDataAccessError::new_err(err.to_string()),
         (err @ ClientError::UnexpectedValueType { .. }, _) => {
@@ -282,6 +329,152 @@ fn parse_addr(addr: &str) -> PyResult<(String, u16)> {
     Ok((host.to_string(), port))
 }
 
+/// Keys the ``iso`` mapping accepts, in the order the defaults table lists them.
+const ISO_PARAM_KEYS: [&str; 10] = [
+    "local_t_sel",
+    "remote_t_sel",
+    "local_s_sel",
+    "remote_s_sel",
+    "local_p_sel",
+    "remote_p_sel",
+    "local_ap_title",
+    "remote_ap_title",
+    "local_ae_qualifier",
+    "remote_ae_qualifier",
+];
+
+/// Reads one selector entry and converts it with `build`.
+///
+/// An absent key leaves `current` in place. `build` carries the layer-specific
+/// length limit, so an over-long selector is reported as a `ValueError` naming
+/// the key rather than as a stack error.
+fn iso_selector<T, E: core::fmt::Display>(
+    iso: &Bound<'_, PyDict>,
+    key: &str,
+    current: T,
+    build: impl FnOnce(&[u8]) -> Result<T, E>,
+) -> PyResult<T> {
+    let Some(value) = iso.get_item(key)? else {
+        return Ok(current);
+    };
+    let bytes = value
+        .extract::<Vec<u8>>()
+        .map_err(|e| PyValueError::new_err(format!("iso['{key}']: {e}")))?;
+    build(&bytes).map_err(|e| PyValueError::new_err(format!("iso['{key}']: {e}")))
+}
+
+/// Reads one AE-qualifier entry, an integer or ``None``.
+///
+/// An absent key leaves `current` in place; an explicit ``None`` leaves the
+/// field out of the AARQ.
+fn iso_ae_qualifier(
+    iso: &Bound<'_, PyDict>,
+    key: &str,
+    current: Option<i32>,
+) -> PyResult<Option<i32>> {
+    match iso.get_item(key)? {
+        None => Ok(current),
+        Some(value) if value.is_none() => Ok(None),
+        Some(value) => {
+            let qualifier = value
+                .extract::<i32>()
+                .map_err(|e| PyValueError::new_err(format!("iso['{key}']: {e}")))?;
+            Ok(Some(qualifier))
+        }
+    }
+}
+
+/// Reads one AP-title entry, a dotted OBJECT IDENTIFIER or ``None``.
+fn iso_ap_title(
+    iso: &Bound<'_, PyDict>,
+    key: &str,
+    current: Option<RustApTitle>,
+) -> PyResult<Option<RustApTitle>> {
+    match iso.get_item(key)? {
+        None => Ok(current),
+        Some(value) if value.is_none() => Ok(None),
+        Some(value) => {
+            let text = value
+                .extract::<String>()
+                .map_err(|e| PyValueError::new_err(format!("iso['{key}']: {e}")))?;
+            let title = text
+                .parse::<RustApTitle>()
+                .map_err(|e| PyValueError::new_err(format!("iso['{key}']: {e}")))?;
+            Ok(Some(title))
+        }
+    }
+}
+
+/// Builds the ISO addressing offered on the next association from a mapping.
+///
+/// Every key is optional; an absent key keeps the value
+/// `IsoConnectionParameters::default()` carries. An unknown key is rejected so
+/// a misspelled parameter cannot be silently ignored.
+fn iso_params_from_dict(iso: &Bound<'_, PyDict>) -> PyResult<RustIsoConnectionParameters> {
+    for key in iso.keys() {
+        let name = key
+            .extract::<String>()
+            .map_err(|_| PyValueError::new_err(format!("iso key {key} is not a string")))?;
+        if !ISO_PARAM_KEYS.contains(&name.as_str()) {
+            return Err(PyValueError::new_err(format!(
+                "unknown iso parameter '{name}'; expected one of {ISO_PARAM_KEYS:?}"
+            )));
+        }
+    }
+
+    let defaults = RustIsoConnectionParameters::default();
+    Ok(RustIsoConnectionParameters {
+        local_t_sel: iso_selector(
+            iso,
+            "local_t_sel",
+            defaults.local_t_sel,
+            RustTSelector::from_slice,
+        )?,
+        remote_t_sel: iso_selector(
+            iso,
+            "remote_t_sel",
+            defaults.remote_t_sel,
+            RustTSelector::from_slice,
+        )?,
+        local_s_sel: iso_selector(
+            iso,
+            "local_s_sel",
+            defaults.local_s_sel,
+            RustSSelector::from_slice,
+        )?,
+        remote_s_sel: iso_selector(
+            iso,
+            "remote_s_sel",
+            defaults.remote_s_sel,
+            RustSSelector::from_slice,
+        )?,
+        local_p_sel: iso_selector(
+            iso,
+            "local_p_sel",
+            defaults.local_p_sel,
+            RustPSelector::from_slice,
+        )?,
+        remote_p_sel: iso_selector(
+            iso,
+            "remote_p_sel",
+            defaults.remote_p_sel,
+            RustPSelector::from_slice,
+        )?,
+        local_ap_title: iso_ap_title(iso, "local_ap_title", defaults.local_ap_title)?,
+        remote_ap_title: iso_ap_title(iso, "remote_ap_title", defaults.remote_ap_title)?,
+        local_ae_qualifier: iso_ae_qualifier(
+            iso,
+            "local_ae_qualifier",
+            defaults.local_ae_qualifier,
+        )?,
+        remote_ae_qualifier: iso_ae_qualifier(
+            iso,
+            "remote_ae_qualifier",
+            defaults.remote_ae_qualifier,
+        )?,
+    })
+}
+
 /// Parse a Python ``TlsVersion`` token into the native enum.
 fn parse_tls_version(token: &str) -> PyResult<iec61850_tls::TlsVersion> {
     match token {
@@ -389,11 +582,13 @@ fn build_tls_acceptor(pt: &PendingTls) -> PyResult<iec61850_tls::TlsAcceptor> {
 
 /// Build an `IedConnection` whose underlying MMS client carries the requested
 /// per-request tuning (request timeout, max outstanding invocations, locally
-/// declared max PDU size). `None` leaves the corresponding default in place.
+/// declared max PDU size) and the ISO addressing the association offers.
+/// `None` leaves the corresponding default in place.
 fn build_ied_connection(
     request_timeout_ms: Option<u64>,
     max_outstanding: Option<u32>,
     local_max_pdu_size: Option<u32>,
+    iso: Option<RustIsoConnectionParameters>,
 ) -> RustIedConnection {
     let mut builder = iec61850_mms::MmsClientBuilder::new();
     if let Some(t) = request_timeout_ms {
@@ -404,6 +599,9 @@ fn build_ied_connection(
     }
     if let Some(s) = local_max_pdu_size {
         builder = builder.local_max_pdu_size(s);
+    }
+    if let Some(params) = iso {
+        builder = builder.iso_parameters(params);
     }
     RustIedConnection::with_mms_client(builder.build())
 }
@@ -434,7 +632,9 @@ impl PyIedConnection {
         request_timeout_ms = None,
         max_outstanding = None,
         local_max_pdu_size = None,
+        iso = None,
     ))]
+    #[allow(clippy::too_many_arguments)]
     fn connect<'py>(
         _cls: &Bound<'py, PyType>,
         py: Python<'py>,
@@ -443,11 +643,13 @@ impl PyIedConnection {
         request_timeout_ms: Option<u64>,
         max_outstanding: Option<u32>,
         local_max_pdu_size: Option<u32>,
+        iso: Option<Bound<'py, PyDict>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let (host, port) = parse_addr(&addr)?;
+        let iso = iso.map(|d| iso_params_from_dict(&d)).transpose()?;
         future_into_py(py, async move {
             let conn =
-                build_ied_connection(request_timeout_ms, max_outstanding, local_max_pdu_size);
+                build_ied_connection(request_timeout_ms, max_outstanding, local_max_pdu_size, iso);
             let deadline = std::time::Duration::from_millis(timeout_ms);
             tokio::time::timeout(deadline, conn.connect(&host, port))
                 .await
@@ -491,6 +693,7 @@ impl PyIedConnection {
         request_timeout_ms = None,
         max_outstanding = None,
         local_max_pdu_size = None,
+        iso = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn connect_tls<'py>(
@@ -513,8 +716,10 @@ impl PyIedConnection {
         request_timeout_ms: Option<u64>,
         max_outstanding: Option<u32>,
         local_max_pdu_size: Option<u32>,
+        iso: Option<Bound<'py, PyDict>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let (host, port) = parse_addr(&addr)?;
+        let iso = iso.map(|d| iso_params_from_dict(&d)).transpose()?;
         let sni = rustls::pki_types::ServerName::try_from(server_name.clone()).map_err(|e| {
             PyValueError::new_err(format!("invalid server_name '{server_name}': {e}"))
         })?;
@@ -542,7 +747,7 @@ impl PyIedConnection {
                 IedConnectionError::new_err(format!("no address for {host}:{port}"))
             })?;
             let conn =
-                build_ied_connection(request_timeout_ms, max_outstanding, local_max_pdu_size);
+                build_ied_connection(request_timeout_ms, max_outstanding, local_max_pdu_size, iso);
             tokio::time::timeout(deadline, conn.connect_tls(socket_addr, &connector, sni))
                 .await
                 .map_err(|_| {
@@ -6115,6 +6320,10 @@ fn _native(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     m.add("IedError", py.get_type::<IedError>())?;
     m.add("IedConnectionError", py.get_type::<IedConnectionError>())?;
+    m.add(
+        "IedSessionRefusedError",
+        py.get_type::<IedSessionRefusedError>(),
+    )?;
     m.add("IedTimeoutError", py.get_type::<IedTimeoutError>())?;
     m.add("IedDataAccessError", py.get_type::<IedDataAccessError>())?;
     m.add("IedServiceError", py.get_type::<IedServiceError>())?;

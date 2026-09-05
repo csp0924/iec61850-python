@@ -214,6 +214,7 @@ which carries the full per-service detail.
 | Abort (graceful Conclude)      |   yes   |   yes   |  yes   |  yes   |
 | Abort (rude — TCP drop)        |   yes   |   yes   |  yes   |  yes   |
 | Release                        |   yes   |   yes   |  yes   |  yes   |
+| Configurable ISO addressing    |   yes   |    —    |  yes   |   —    |
 | TLS 1.2 / 1.3 (IEC 62351-3)    | yes (1) | yes (1) |  yes   |  yes   |
 | Mutual TLS / pinned peer / CRL |   yes   |   yes   |  yes   |  yes   |
 | Authentication (ACSE password) |    —    |    —    |   —    |   —    |
@@ -675,6 +676,54 @@ await conn.disconnect()
 # Rude close — drop the TCP socket without negotiation. Use when the peer
 # stops responding or a normal disconnect would block.
 await conn.abort()
+```
+
+### ISO addressing
+
+The association a client opens carries the transport, session and presentation
+selectors and the ACSE application-entity titles. The defaults are the values
+IEC 61850-8-1 Annex A lists for an MMS association and suit most IEDs; pass an
+`IsoConnectionParameters` when a device expects something else.
+
+| Field                  | Default                | Limit           |
+|------------------------|------------------------|-----------------|
+| `local_t_sel`          | `b"\x00\x01"`          | 4 bytes         |
+| `remote_t_sel`         | `b"\x00\x01"`          | 4 bytes         |
+| `local_s_sel`          | `b"\x00\x01"`          | 16 bytes        |
+| `remote_s_sel`         | `b"\x00\x01"`          | 16 bytes        |
+| `local_p_sel`          | `b"\x00\x00\x00\x01"`  | 16 bytes        |
+| `remote_p_sel`         | `b"\x00\x00\x00\x01"`  | 16 bytes        |
+| `local_ap_title`       | `"1.1.1.999"`          | dotted OID      |
+| `remote_ap_title`      | `"1.1.1.999.1"`        | dotted OID      |
+| `local_ae_qualifier`   | `12`                   | signed 32-bit   |
+| `remote_ae_qualifier`  | `12`                   | signed 32-bit   |
+
+```python
+iso = iec61850.IsoConnectionParameters(
+    remote_p_sel=b"\x00\x00\x00\x02",
+    remote_ap_title="1.3.9999.13",
+)
+
+conn = await iec61850.IedConnection.connect("10.0.0.1:102", iso=iso)
+
+# The same parameter is accepted by connect_tls() and by
+# Iec61850ClientConfig(iso=...).
+```
+
+An over-long selector or a malformed AP-title raises `ValueError` when the
+parameters are built, before any socket is opened. An AP-title of `None` leaves
+that field out of the ACSE AARQ.
+
+A peer that does not recognise the addressing it is offered answers the session
+CONNECT with a REFUSE SPDU, which surfaces as `IedSessionRefusedError`:
+
+```python
+try:
+    conn = await iec61850.IedConnection.connect("10.0.0.1:102", iso=iso)
+except iec61850.IedSessionRefusedError as e:
+    # ISO 8327-1 reason code, transport-disconnect parameter, and the
+    # presentation provider-reason; each is None when the refusal omits it.
+    print(e.reason_code, e.transport_disconnect, e.provider_reason)
 ```
 
 ## Log service
@@ -1203,6 +1252,8 @@ try:
     conn = await iec61850.IedConnection.connect("10.0.0.1:102", timeout_ms=2000)
 except iec61850.IedTimeoutError:
     ...   # connection timed out
+except iec61850.IedSessionRefusedError:
+    ...   # peer refused the association at the session layer
 except iec61850.IedConnectionError:
     ...   # TCP / OSI stack failure
 except iec61850.IedError:
@@ -1223,6 +1274,15 @@ except iec61850.IedError:
   `IedDataAccessError`.
 - Corrected the documented `iec61850.AcsiClass` member for listing a logical
   node's data set names: `AcsiClass.DATASET`.
+- `IsoConnectionParameters` — the ISO addressing an association offers is now
+  settable per connection through `IedConnection.connect()`,
+  `connect_tls()` and `Iec61850ClientConfig`. The defaults follow
+  IEC 61850-8-1 Annex A: P-SEL `00 00 00 01`, AP-titles `1.1.1.999` and
+  `1.1.1.999.1`, AE-qualifier 12 on both sides.
+- `IedSessionRefusedError` — a session REFUSE SPDU now raises a dedicated
+  subclass of `IedConnectionError` carrying `reason_code`,
+  `transport_disconnect` and `provider_reason`, instead of a generic
+  connection failure.
 - The `ServiceError` `errorClass` subcodes now follow the ISO 9506-2
   `ServiceError` ASN.1 named numbers, and a Confirmed-ErrorPDU decodes per its
   `[0] IMPLICIT` invokeID tag. A server refusal now surfaces through
