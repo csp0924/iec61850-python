@@ -119,8 +119,8 @@ async def test_omitting_iso_offers_the_dataclass_defaults() -> None:
     assert absent_spdu == explicit_spdu
 
 
-async def test_default_parameters_carry_the_annex_a_values() -> None:
-    """The defaults are the IEC 61850-8-1 Annex A values, read off the wire."""
+async def test_default_parameters_carry_the_documented_values() -> None:
+    """The documented default selectors and titles are what goes on the wire."""
     cr, spdu = await capture_offer(IsoConnectionParameters())
     options = cotp_variable_part(cr)
     two_bytes = bytes([0x00, 0x01])

@@ -451,7 +451,7 @@ class IedConnection:
         """Open an association with ``addr``, given as ``"host:port"``.
 
         ``iso`` replaces the ISO addressing the association offers; ``None``
-        keeps the IEC 61850-8-1 Annex A defaults.
+        keeps the ``IsoConnectionParameters`` defaults.
         """
         native = await _native.IedConnection.connect(
             addr,
@@ -481,7 +481,7 @@ class IedConnection:
         """Open a TLS-protected association with ``addr``.
 
         ``iso`` replaces the ISO addressing the association offers; ``None``
-        keeps the IEC 61850-8-1 Annex A defaults.
+        keeps the ``IsoConnectionParameters`` defaults.
         """
         native = await _native.IedConnection.connect_tls(
             addr,

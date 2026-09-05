@@ -681,9 +681,11 @@ await conn.abort()
 ### ISO addressing
 
 The association a client opens carries the transport, session and presentation
-selectors and the ACSE application-entity titles. The defaults are the values
-IEC 61850-8-1 Annex A lists for an MMS association and suit most IEDs; pass an
-`IsoConnectionParameters` when a device expects something else.
+selectors and the ACSE application-entity titles. The default selectors are the
+values IEC 61850-8-1 specifies for an MMS association, and the default AP-titles
+and AE-qualifier are the values IEDs customarily expect, which the standard
+leaves to the configuration; pass an `IsoConnectionParameters` when a device
+expects something else.
 
 | Field                  | Default                | Limit           |
 |------------------------|------------------------|-----------------|
@@ -1276,9 +1278,11 @@ except iec61850.IedError:
   node's data set names: `AcsiClass.DATASET`.
 - `IsoConnectionParameters` — the ISO addressing an association offers is now
   settable per connection through `IedConnection.connect()`,
-  `connect_tls()` and `Iec61850ClientConfig`. The defaults follow
-  IEC 61850-8-1 Annex A: P-SEL `00 00 00 01`, AP-titles `1.1.1.999` and
-  `1.1.1.999.1`, AE-qualifier 12 on both sides.
+  `connect_tls()` and `Iec61850ClientConfig`. The default selectors follow
+  IEC 61850-8-1 (P-SEL `00 00 00 01`); the default AP-titles `1.1.1.999` and
+  `1.1.1.999.1` with AE-qualifier 12 on both sides are the values IEDs
+  customarily expect. Previous releases sent empty presentation selectors
+  and no AP-title.
 - `IedSessionRefusedError` — a session REFUSE SPDU now raises a dedicated
   subclass of `IedConnectionError` carrying `reason_code`,
   `transport_disconnect` and `provider_reason`, instead of a generic

@@ -375,10 +375,11 @@ class IsoConnectionParameters:
     """ISO addressing offered when a client opens an association.
 
     ``local_*`` names the calling side and ``remote_*`` the called side. The
-    defaults are the values IEC 61850-8-1 Annex A lists for an MMS association:
-    T-Selector ``00 01``, S-Selector ``00 01``, P-Selector ``00 00 00 01``, and
-    an AP-title with an AE-qualifier present on both sides. An AP-title of
-    ``None`` leaves that field out of the ACSE AARQ.
+    default selectors are the values IEC 61850-8-1 specifies for an MMS
+    association: T-Selector ``00 01``, S-Selector ``00 01``, P-Selector
+    ``00 00 00 01``. The default AP-titles and AE-qualifiers are the values IEDs
+    customarily expect; the standard leaves them to the configuration. An
+    AP-title of ``None`` leaves that field out of the ACSE AARQ.
 
     Pass an instance to ``IedConnection.connect()`` or ``connect_tls()`` to
     address a server that expects selectors other than the defaults.
@@ -459,7 +460,7 @@ class Iec61850ClientConfig:
     ``request_timeout_ms`` / ``max_outstanding`` / ``local_max_pdu_size`` apply
     after the connection is established and tune per-request behavior. ``iso``
     replaces the ISO addressing the association offers; ``None`` keeps the
-    IEC 61850-8-1 Annex A defaults.
+    ``IsoConnectionParameters`` defaults.
     """
 
     address: str
