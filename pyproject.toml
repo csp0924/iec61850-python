@@ -7,7 +7,7 @@ build-backend = "maturin"
 name = "iec61850"
 # Keep in step with `version` in Cargo.toml: scripts/release.py reads the
 # Cargo one to locate the built wheel, and a mismatch makes it find nothing.
-version = "0.13.0"
+version = "0.14.0"
 description = "Async-first IEC 61850 client for Python."
 readme = "README.md"
 requires-python = ">=3.11"

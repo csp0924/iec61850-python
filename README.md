@@ -115,7 +115,7 @@ The Rust side is not vendored. `Cargo.toml` takes each crate from the
 implementation repository at a release tag:
 
 ```toml
-iec61850-client = { git = "https://github.com/csp0924/iec61850-rust", tag = "v0.1.0", features = ["tls"] }
+iec61850-client = { git = "https://github.com/csp0924/iec61850-rust", tag = "v0.2.0", features = ["tls"] }
 ```
 
 Once that tag exists, a build is just:
@@ -158,7 +158,7 @@ config alone is not enough — resolution fails with:
 
 ```
 failed to load source for dependency `iec61850-client`
-  Unable to update https://github.com/csp0924/iec61850-rust?tag=v0.1.0
+  Unable to update https://github.com/csp0924/iec61850-rust?tag=v0.2.0
 ```
 
 Seed a lock file once and the patch takes over. Cargo's git backend needs an
@@ -171,14 +171,14 @@ repository root, with the sibling checkout in place:
 RUST_REPO=$(cd ../iec61850-rust && { pwd -W 2>/dev/null || pwd; })
 
 # 1. Point the manifest at that checkout, just long enough to resolve.
-sed -i "s|https://github.com/csp0924/iec61850-rust\", tag = \"v0.1.0|file://${RUST_REPO}\", branch = \"main|g" Cargo.toml
+sed -i "s|https://github.com/csp0924/iec61850-rust\", tag = \"v0.2.0|file://${RUST_REPO}\", branch = \"main|g" Cargo.toml
 cargo generate-lockfile
 
 # 2. Restore the manifest and relabel the source lines the lock recorded.
 #    Cargo canonicalises the URL it stores, so match on the branch suffix
 #    rather than on the exact spelling passed in above.
 git checkout Cargo.toml
-sed -i -E "s|git\+file://[^\"]*\?branch=main|git+https://github.com/csp0924/iec61850-rust?tag=v0.1.0|g" Cargo.lock
+sed -i -E "s|git\+file://[^\"]*\?branch=main|git+https://github.com/csp0924/iec61850-rust?tag=v0.2.0|g" Cargo.lock
 ```
 
 `Cargo.lock` is git-ignored for the same reason: it pins a revision the
@@ -188,7 +188,7 @@ offline and reports the patched packages coming from
 against your working tree — edits on the Rust side are picked up without a
 commit.
 
-Once `v0.1.0` is tagged, delete `.cargo/config.toml` and `Cargo.lock` and build
+Once `v0.2.0` is tagged, delete `.cargo/config.toml` and `Cargo.lock` and build
 normally; none of this is needed any more.
 
 ## Conformance (PICS)
@@ -1208,6 +1208,26 @@ except iec61850.IedConnectionError:
 except iec61850.IedError:
     ...   # catch-all base for any IEC 61850 error
 ```
+
+## Release notes
+
+### 0.14.0
+
+- `get_data_set_directory` — the ACSI GetDataSetDirectory service, returning
+  a `DataSetDirectory` with each data set member as an IEC reference and its
+  functional constraint.
+- `read_multiple` — reads several object references with their functional
+  constraints in a single MMS Read, in request order.
+- `get_data_set_values` and `read_multiple` accept `strict=False`, returning
+  a `DataAccessFailure` for a failing entry in place of raising
+  `IedDataAccessError`.
+- Corrected the documented `iec61850.AcsiClass` member for listing a logical
+  node's data set names: `AcsiClass.DATASET`.
+- The `ServiceError` `errorClass` subcodes now follow the ISO 9506-2
+  `ServiceError` ASN.1 named numbers, and a Confirmed-ErrorPDU decodes per its
+  `[0] IMPLICIT` invokeID tag. A server refusal now surfaces through
+  `IedServiceError` carrying the standard `ErrorClass` rather than a generic
+  parse failure.
 
 ## Who is using this?
 

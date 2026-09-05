@@ -1,7 +1,7 @@
 [package]
 name = "iec61850-pyo3"
 # Keep in step with `version` in pyproject.toml.
-version = "0.13.0"
+version = "0.14.0"
 edition = "2021"
 rust-version = "1.88"
 authors = ["Cheng Sin Pang"]
@@ -16,13 +16,13 @@ name = "_native"
 crate-type = ["cdylib"]
 
 [dependencies]
-iec61850-client = { git = "https://github.com/csp0924/iec61850-rust", tag = "v0.1.0", features = ["tls"] }
-iec61850-model  = { git = "https://github.com/csp0924/iec61850-rust", tag = "v0.1.0" }
-iec61850-mms    = { git = "https://github.com/csp0924/iec61850-rust", tag = "v0.1.0" }
-iec61850-scl    = { git = "https://github.com/csp0924/iec61850-rust", tag = "v0.1.0" }
-iec61850-server = { git = "https://github.com/csp0924/iec61850-rust", tag = "v0.1.0" }
-iec61850-sntp   = { git = "https://github.com/csp0924/iec61850-rust", tag = "v0.1.0" }
-iec61850-tls    = { git = "https://github.com/csp0924/iec61850-rust", tag = "v0.1.0" }
+iec61850-client = { git = "https://github.com/csp0924/iec61850-rust", tag = "v0.2.0", features = ["tls"] }
+iec61850-model  = { git = "https://github.com/csp0924/iec61850-rust", tag = "v0.2.0" }
+iec61850-mms    = { git = "https://github.com/csp0924/iec61850-rust", tag = "v0.2.0" }
+iec61850-scl    = { git = "https://github.com/csp0924/iec61850-rust", tag = "v0.2.0" }
+iec61850-server = { git = "https://github.com/csp0924/iec61850-rust", tag = "v0.2.0" }
+iec61850-sntp   = { git = "https://github.com/csp0924/iec61850-rust", tag = "v0.2.0" }
+iec61850-tls    = { git = "https://github.com/csp0924/iec61850-rust", tag = "v0.2.0" }
 
 rustls              = { version = "0.23", default-features = false, features = ["ring", "tls12"] }
 tokio               = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
