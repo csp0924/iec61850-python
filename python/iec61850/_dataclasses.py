@@ -308,8 +308,10 @@ class DataAccessFailure:
     error: str
 
 
-# Selector length limits: ISO 8073 bounds the T-Selector at 4 octets, ISO 8327-1
-# the S-Selector and ISO 8823-1 the P-Selector at 16 each.
+# Selector length limits. ISO 8327-1 bounds the S-Selector and ISO 8823-1 the
+# P-Selector at 16 octets each. ISO 8073 leaves the T-Selector variable in
+# length; the 4 octets accepted here are this binding's own limit, matching the
+# fixed four-octet transport selector the stack below encodes.
 _T_SELECTOR_MAX_LEN = 4
 _S_SELECTOR_MAX_LEN = 16
 _P_SELECTOR_MAX_LEN = 16
