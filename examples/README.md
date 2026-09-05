@@ -49,6 +49,7 @@ over loopback.
 | `11_journal_log.py` | LCB writes + `query_journal_by_time`, ring-buffer eviction |
 | `12_tls_secured_session.py` | mutual TLS with throw-away self-signed identities; `Identity` dataclass |
 | `13_sntp_time_sync.py` | `query_sntp`, typed `SntpResponse`, formatted readout |
+| `14_dataset_directory_batch_read.py` | `get_data_set_directory` member list, `read_multiple` in one round trip, `DataAccessFailure` markers, cloning a data set |
 
 Two recipes build their own model rather than loading `demo.cid`, because
 the CID does not declare what they need: `04` needs a data attribute under a

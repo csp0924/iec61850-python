@@ -281,6 +281,34 @@ class DataSetMember:
 
 
 @dataclass(frozen=True, slots=True)
+class DataSetDirectory:
+    """Result of ``get_data_set_directory()``.
+
+    ``members`` is in the order the server holds them, which is the order
+    ``get_data_set_values()`` returns its entries in, so the list can be fed
+    straight back into ``create_data_set()`` to clone the set. ``deletable``
+    mirrors MMS ``mmsDeletable``: true only for a data set created at runtime
+    through ``create_data_set()``, false for one declared in the SCL.
+    """
+
+    deletable: bool
+    members: list[DataSetMember]
+
+
+@dataclass(frozen=True, slots=True)
+class DataAccessFailure:
+    """One failed entry of a per-entry read result.
+
+    Stands in place of a value in the list returned by ``read_multiple()`` and
+    ``get_data_set_values()`` under ``strict=False``. ``error`` is the symbolic
+    MMS ``DataAccessError`` name and ``code`` the value carried on the wire.
+    """
+
+    code: int
+    error: str
+
+
+@dataclass(frozen=True, slots=True)
 class TlsConfig:
     """TLS configuration for ``IedConnection.connect_tls()``.
 

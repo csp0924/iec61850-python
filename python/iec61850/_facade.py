@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -11,6 +11,8 @@ from . import _native
 from ._dataclasses import (
     ClientReport,
     ControlOutcome,
+    DataAccessFailure,
+    DataSetDirectory,
     DataSetMember,
     Iec61850ClientConfig,
     JournalEntry,
@@ -25,6 +27,17 @@ from ._dataclasses import (
 from ._enums import FC, AcsiClass, ControlModel, SboClass, Validity
 
 _NIE = "Not implemented in this release."
+
+
+def _as_failure(entry: Any) -> DataAccessFailure | None:
+    """Return a per-entry failure marker as a dataclass, else ``None``.
+
+    The native layer converts every MMS value to a scalar, ``bytes`` or
+    ``list``, so a ``dict`` entry is unambiguously an access failure.
+    """
+    if isinstance(entry, dict):
+        return DataAccessFailure(code=int(entry["code"]), error=str(entry["error"]))
+    return None
 
 
 def _compose_reference(ref: str, array_index: int | None, component: str | None) -> str:
@@ -742,13 +755,80 @@ class IedConnection:
         """
         return await self._native_conn.delete_data_set(ref)
 
-    async def get_data_set_values(self, ref: str) -> list[Any]:
+    async def get_data_set_directory(self, ref: str) -> DataSetDirectory:
+        """Read the member list of a dataset (GetDataSetDirectory).
+
+        ``ref`` is ``"<LD>/<LN>.<dsName>"``. Members come back in the order
+        the server holds them, each with the Functional Constraint of its data
+        attribute, in the reference form ``create_data_set`` accepts. Raises
+        ``IedServiceError`` when the server holds no such dataset.
+
+        Enumerating the dataset *names* of a logical node is a different
+        service: ``get_logical_node_directory(ln_ref, AcsiClass.DS)``.
+        """
+        raw = await self._native_conn.get_data_set_directory(ref)
+        return DataSetDirectory(
+            deletable=bool(raw["deletable"]),
+            members=[
+                DataSetMember(
+                    object_ref=m["object_ref"],
+                    fc=FC(m["fc"]),
+                    array_index=m["array_index"],
+                    component=m["component"],
+                )
+                for m in raw["members"]
+            ],
+        )
+
+    async def get_data_set_values(
+        self, ref: str, *, strict: bool = True
+    ) -> list[Any]:
         """Read every value of a dataset.
 
-        Each entry follows the same conversion rules as ``read``. Raises
-        ``IedDataAccessError`` if any entry's access fails on the server.
+        Each entry follows the same conversion rules as ``read``. Under
+        ``strict`` (the default) a failing entry raises ``IedDataAccessError``;
+        otherwise it is a ``DataAccessFailure`` in its own position and the
+        other values stand.
         """
-        return await self._native_conn.get_data_set_values(ref)
+        return await self._native_conn.get_data_set_values(ref, strict)
+
+    async def read_multiple(
+        self,
+        targets: Sequence[tuple[str, FC]],
+        *,
+        strict: bool = True,
+    ) -> list[Any]:
+        """Read several objects with a single MMS Read.
+
+        Each target is an object reference with its Functional Constraint,
+        resolved exactly as by ``read``. Unlike a dataset read this needs no
+        named variable list on the server, so an arbitrary set of attributes
+        can be fetched in one round trip.
+
+        The result follows the order of ``targets`` and has the same length.
+        Under ``strict`` (the default) a failing entry raises
+        ``IedDataAccessError`` naming its index and reference; otherwise it is
+        a ``DataAccessFailure`` in its own position.
+
+        An empty ``targets`` or a reference that does not resolve raises
+        ``ValueError`` without sending anything.
+        """
+        requested = list(targets)
+        raw = await self._native_conn.read_objects(
+            [(ref, fc.value) for ref, fc in requested]
+        )
+        out: list[Any] = []
+        for idx, entry in enumerate(raw):
+            failure = _as_failure(entry)
+            if failure is None:
+                out.append(entry)
+            elif strict:
+                raise _native.IedDataAccessError(
+                    f"read_multiple entry {idx} ({requested[idx][0]}): {failure.error}"
+                )
+            else:
+                out.append(failure)
+        return out
 
     async def set_data_set_values(self, ref: str, values: list[Any]) -> None:
         """Write every value of a dataset.

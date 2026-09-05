@@ -186,6 +186,63 @@ fn parse_fc(token: &str) -> PyResult<RustFC> {
         .map_err(|e| PyValueError::new_err(format!("invalid FC token '{token}': {e:?}")))
 }
 
+/// Symbolic name of a `DataAccessError`, the inverse of `data_access_from_py`.
+fn data_access_name(err: RustDataAccessError) -> &'static str {
+    match err {
+        RustDataAccessError::ObjectInvalidated => "ObjectInvalidated",
+        RustDataAccessError::HardwareFault => "HardwareFault",
+        RustDataAccessError::TemporarilyUnavailable => "TemporarilyUnavailable",
+        RustDataAccessError::ObjectAccessDenied => "ObjectAccessDenied",
+        RustDataAccessError::ObjectUndefined => "ObjectUndefined",
+        RustDataAccessError::InvalidAddress => "InvalidAddress",
+        RustDataAccessError::TypeUnsupported => "TypeUnsupported",
+        RustDataAccessError::TypeInconsistent => "TypeInconsistent",
+        RustDataAccessError::ObjectAttributeInconsistent => "ObjectAttributeInconsistent",
+        RustDataAccessError::ObjectAccessUnsupported => "ObjectAccessUnsupported",
+        RustDataAccessError::ObjectNonExistent => "ObjectNonExistent",
+        RustDataAccessError::ObjectValueInvalid => "ObjectValueInvalid",
+    }
+}
+
+/// Builds the marker a per-entry access failure surfaces as.
+///
+/// A converted MMS value is never a `dict`, so a `dict` in a result list
+/// unambiguously marks that entry as failed. It carries the symbolic
+/// `DataAccessError` name under `"error"` and its wire code under `"code"`.
+fn access_failure_dict(py: Python<'_>, err: RustDataAccessError) -> PyResult<Py<PyAny>> {
+    let marker = PyDict::new(py);
+    marker.set_item("error", data_access_name(err))?;
+    marker.set_item("code", err.code())?;
+    Ok(marker.into_any().unbind())
+}
+
+/// Splits an object reference `<base>(<index>)[.<component>]` into its parts.
+///
+/// This is the inverse of the alternate-access composition applied to a data
+/// set member. A reference that carries no parenthesised decimal index is
+/// returned whole, with no index and no component.
+fn decompose_reference(reference: &str) -> (&str, Option<u32>, Option<&str>) {
+    let Some(open) = reference.find('(') else {
+        return (reference, None, None);
+    };
+    let Some(close) = reference[open + 1..].find(')').map(|i| open + 1 + i) else {
+        return (reference, None, None);
+    };
+    let Ok(index) = reference[open + 1..close].parse::<u32>() else {
+        return (reference, None, None);
+    };
+    let rest = &reference[close + 1..];
+    if rest.is_empty() {
+        return (&reference[..open], Some(index), None);
+    }
+    match rest.strip_prefix('.') {
+        Some(component) if !component.is_empty() => {
+            (&reference[..open], Some(index), Some(component))
+        }
+        _ => (reference, None, None),
+    }
+}
+
 /// Map the Python `AcsiClass` StrEnum value to the native ACSI class.
 ///
 /// `"CO"` is rejected — control objects are queried via dedicated client
@@ -1003,13 +1060,17 @@ impl PyIedConnection {
 
     /// Read every value of a dataset (B2 — GetDataSetValues).
     ///
-    /// Returns a list whose entries follow ``read_object`` conversion. If any
-    /// entry's access fails on the server, raises ``IedDataAccessError`` with
-    /// the entry index and the wire error code.
+    /// Returns a list whose entries follow ``read_object`` conversion. With
+    /// ``strict`` (the default) an entry whose access fails on the server
+    /// raises ``IedDataAccessError`` carrying the entry index and the wire
+    /// error code; otherwise that entry is the marker dict
+    /// ``{"error": <name>, "code": <int>}`` and the other values stand.
+    #[pyo3(signature = (reference, strict = true))]
     fn get_data_set_values<'py>(
         &self,
         py: Python<'py>,
         reference: String,
+        strict: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let conn = Arc::clone(&self.inner);
         future_into_py(py, async move {
@@ -1026,9 +1087,99 @@ impl PyIedConnection {
                             list.append(mms_value_to_pyobject(py, &value)?)?;
                         }
                         iec61850_mms::AccessResult::Failure(err) => {
-                            return Err(IedDataAccessError::new_err(format!(
-                                "dataset entry {idx}: {err:?}"
-                            )));
+                            if strict {
+                                return Err(IedDataAccessError::new_err(format!(
+                                    "dataset entry {idx}: {err:?}"
+                                )));
+                            }
+                            list.append(access_failure_dict(py, *err)?)?;
+                        }
+                    }
+                }
+                Ok(list.unbind())
+            })
+        })
+    }
+
+    /// Read the member list of a dataset (GetDataSetDirectory).
+    ///
+    /// `reference` is `"<LD>/<LN>.<dsName>"`. Returns
+    /// ``{"deletable": bool, "members": [...]}`` where each member is
+    /// ``{"object_ref": str, "fc": str, "array_index": int | None,
+    /// "component": str | None}``, in the order the server holds them, which
+    /// is the order ``get_data_set_values`` returns its entries in.
+    /// ``deletable`` is true only for a dataset created through CreateDataSet.
+    fn get_data_set_directory<'py>(
+        &self,
+        py: Python<'py>,
+        reference: String,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let conn = Arc::clone(&self.inner);
+        future_into_py(py, async move {
+            let directory = conn
+                .get_data_set_directory(&reference)
+                .await
+                .map_err(|e| map_client_error(e, ErrCtx::Service))?;
+            Python::attach(|py| {
+                let members = PyList::empty(py);
+                for member in &directory.members {
+                    let (object_ref, array_index, component) =
+                        decompose_reference(&member.reference);
+                    let entry = PyDict::new(py);
+                    entry.set_item("object_ref", object_ref)?;
+                    entry.set_item("fc", member.fc.as_str())?;
+                    entry.set_item("array_index", array_index)?;
+                    entry.set_item("component", component)?;
+                    members.append(entry)?;
+                }
+                let out = PyDict::new(py);
+                out.set_item("deletable", directory.deletable)?;
+                out.set_item("members", members)?;
+                Ok(out.unbind())
+            })
+        })
+    }
+
+    /// Read several objects with a single MMS Read (GetDataValues, batched).
+    ///
+    /// `targets` is a sequence of `(reference, fc_token)` pairs, each resolved
+    /// exactly as by ``read_object``. The returned list follows the order of
+    /// `targets` and has the same length: a successful entry is the converted
+    /// value, a failing one the marker dict
+    /// ``{"error": <name>, "code": <int>}``.
+    ///
+    /// An empty `targets` or a reference that does not resolve raises
+    /// ``ValueError`` without sending anything.
+    fn read_objects<'py>(
+        &self,
+        py: Python<'py>,
+        targets: Vec<(String, String)>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let conn = Arc::clone(&self.inner);
+        let mut parsed: Vec<(String, RustFC)> = Vec::with_capacity(targets.len());
+        for (reference, fc_token) in targets {
+            let fc = parse_fc(&fc_token)?;
+            parsed.push((reference, fc));
+        }
+        future_into_py(py, async move {
+            let borrowed: Vec<(&str, RustFC)> = parsed
+                .iter()
+                .map(|(reference, fc)| (reference.as_str(), *fc))
+                .collect();
+            let results = conn
+                .read_objects(&borrowed)
+                .await
+                .map_err(|e| map_client_error(e, ErrCtx::Service))?;
+            Python::attach(|py| {
+                let list = PyList::empty(py);
+                for entry in &results {
+                    match entry {
+                        iec61850_mms::AccessResult::Success(data) => {
+                            let value = iec61850_client::mms_compat::mms_data_to_mms_value(data);
+                            list.append(mms_value_to_pyobject(py, &value)?)?;
+                        }
+                        iec61850_mms::AccessResult::Failure(err) => {
+                            list.append(access_failure_dict(py, *err)?)?;
                         }
                     }
                 }

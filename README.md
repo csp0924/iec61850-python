@@ -253,6 +253,9 @@ which carries the full per-service detail.
 2. Server applies the configured `WriteAccessPolicies` (default
    `SP | SV | SE`) and any registered `on_read` / `on_write` callbacks.
 
+`GetDataValues` covers both the single read (`read`) and the batched form
+(`read_multiple`), which carries any set of references in one MMS Read.
+
 ### Data Set class (§12)
 
 | Service                       | Py-C |  Py-S   | Rust-C | Rust-S |
@@ -261,7 +264,8 @@ which carries the full per-service detail.
 | SetDataSetValues              | yes  |   yes   |  yes   |  yes   |
 | CreateDataSet (dynamic)       | yes  |   yes   |  yes   |  yes   |
 | DeleteDataSet                 | yes  |   yes   |  yes   |  yes   |
-| GetDataSetDirectory           |  —   |    —    |  yes   |  yes   |
+| GetDataSetDirectory (members) | yes  |   yes   |  yes   |  yes   |
+| List data set names (GetLogicalNodeDirectory DS) | yes | yes | yes | yes |
 | Static (SCL-defined) datasets | yes  | yes (3) |  yes   |  yes   |
 
 3. Server registers static datasets through `add_dataset()`; either bound
@@ -608,6 +612,59 @@ facade composes the alternate-access reference for you.
 `get_data_set_values` and `set_data_set_values` raise `IedDataAccessError`
 when any single entry's access or write fails on the server, with the entry
 index in the error message.
+
+### What a data set holds
+
+```python
+directory = await conn.get_data_set_directory("DemoIEDLD0/LLN0.dsStatus")
+
+directory.deletable          # False for an SCL-declared set, True for a
+                             # set built with create_data_set()
+for member in directory.members:
+    print(member.fc.value, member.object_ref)
+```
+
+Members come back in the order the server holds them, which is the order
+`get_data_set_values` returns its entries in, and in the reference form
+`create_data_set` accepts — so a directory read clones a data set:
+
+```python
+await conn.create_data_set("DemoIEDLD0/LLN0.ds_clone", directory.members)
+```
+
+Listing the data set *names* of a logical node is a different service:
+`get_logical_node_directory(ln_ref, iec61850.AcsiClass.DS)`.
+
+### Reading several objects in one round trip
+
+```python
+values = await conn.read_multiple(
+    [
+        ("DemoIEDLD0/GGIO1.Ind1.stVal", iec61850.FC.ST),
+        ("DemoIEDLD0/MMXU1.TotW.mag.f", iec61850.FC.MX),
+    ],
+)
+```
+
+The result follows the request order and has the same length. No named
+variable list has to exist on the server, so any set of attributes can be
+polled with a single MMS Read.
+
+### Per-entry failures
+
+By default one failing entry raises `IedDataAccessError`. Pass
+`strict=False` to `read_multiple` or `get_data_set_values` to keep the
+successful values and receive a `DataAccessFailure` in the failing position:
+
+```python
+values = await conn.read_multiple(targets, strict=False)
+for target, value in zip(targets, values, strict=True):
+    if isinstance(value, iec61850.DataAccessFailure):
+        print(f"{target[0]} unavailable: {value.error}")
+```
+
+`DataAccessFailure.error` is the symbolic MMS `DataAccessError` name (for
+example `"ObjectNonExistent"`) and `.code` the value carried on the wire.
 
 ## Connection control
 
