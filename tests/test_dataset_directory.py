@@ -10,10 +10,27 @@ code under test.
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
 
 import _demo
 import iec61850
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+# Every prose source that hands a caller an `AcsiClass` member by name. A
+# member that no longer exists makes the snippet raise `AttributeError`.
+DOC_SOURCES = {
+    "README.md": REPO_ROOT / "README.md",
+    "_facade.py": REPO_ROOT / "python" / "iec61850" / "_facade.py",
+    "examples/02_browse_data_model.py": REPO_ROOT
+    / "examples"
+    / "02_browse_data_model.py",
+}
+
+ACSI_MEMBER = re.compile("AcsiClass[.]([A-Za-z_][A-Za-z0-9_]*)")
 
 DS_STATUS = f"{_demo.DOMAIN}/{_demo.DS_STATUS}"
 DS_MEAS = f"{_demo.DOMAIN}/{_demo.DS_MEAS}"
@@ -119,6 +136,39 @@ async def test_directory_members_clone_the_data_set(demo_server: str) -> None:
             assert await conn.delete_data_set(DS_CLONE) is True
     finally:
         await conn.disconnect()
+
+
+async def test_logical_node_directory_lists_the_data_set_names(
+    demo_server: str,
+) -> None:
+    """The call the docs point at for names, run against a live server.
+
+    Listing names is GetLogicalNodeDirectory, a different service from the
+    member list this module otherwise covers.
+    """
+    conn = await iec61850.IedConnection.connect(demo_server)
+    try:
+        names = await conn.get_logical_node_directory(
+            f"{_demo.DOMAIN}/LLN0", iec61850.AcsiClass.DATASET
+        )
+        assert "dsMeas" in names
+        assert "dsStatus" in names
+    finally:
+        await conn.disconnect()
+
+
+@pytest.mark.parametrize("origin", sorted(DOC_SOURCES))
+def test_documented_acsi_class_members_exist(origin: str) -> None:
+    """Every `AcsiClass.<name>` a doc hands a caller must resolve.
+
+    A member renamed in `_enums.py` leaves the snippets behind, and a reader
+    copying one gets `AttributeError` rather than a wrong result.
+    """
+    text = DOC_SOURCES[origin].read_text(encoding="utf-8")
+    named = sorted(set(ACSI_MEMBER.findall(text)))
+    assert named, f"{origin} names no AcsiClass member"
+    missing = [name for name in named if not hasattr(iec61850.AcsiClass, name)]
+    assert not missing, f"{origin} names absent AcsiClass members: {missing}"
 
 
 async def test_get_data_set_values_strict_and_lenient_agree(demo_server: str) -> None:

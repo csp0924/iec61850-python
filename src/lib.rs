@@ -6134,3 +6134,126 @@ fn _native(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        data_access_from_py, data_access_name, decompose_reference,
+        RustDataAccessError as DataAccessError,
+    };
+
+    #[test]
+    fn plain_reference_carries_no_index() {
+        assert_eq!(
+            decompose_reference("LD0/MMXU1.TotW.mag.f"),
+            ("LD0/MMXU1.TotW.mag.f", None, None)
+        );
+    }
+
+    #[test]
+    fn indexed_reference_splits_off_the_index() {
+        assert_eq!(
+            decompose_reference("LD0/GGIO1.Ind1(2)"),
+            ("LD0/GGIO1.Ind1", Some(2), None)
+        );
+    }
+
+    #[test]
+    fn indexed_reference_splits_off_index_and_component() {
+        assert_eq!(
+            decompose_reference("LD0/GGIO1.Ind1(2).stVal"),
+            ("LD0/GGIO1.Ind1", Some(2), Some("stVal"))
+        );
+    }
+
+    #[test]
+    fn zero_index_is_kept_apart_from_no_index() {
+        assert_eq!(
+            decompose_reference("LD0/GGIO1.Ind1(0).stVal"),
+            ("LD0/GGIO1.Ind1", Some(0), Some("stVal"))
+        );
+    }
+
+    #[test]
+    fn multi_level_component_stays_whole() {
+        assert_eq!(
+            decompose_reference("LD0/MMXU1.PhV(1).cVal.mag.f"),
+            ("LD0/MMXU1.PhV", Some(1), Some("cVal.mag.f"))
+        );
+    }
+
+    #[test]
+    fn largest_index_round_trips() {
+        let reference = format!("LD0/GGIO1.Ind1({}).stVal", u32::MAX);
+        assert_eq!(
+            decompose_reference(&reference),
+            ("LD0/GGIO1.Ind1", Some(u32::MAX), Some("stVal"))
+        );
+    }
+
+    #[test]
+    fn a_non_numeric_index_leaves_the_reference_whole() {
+        for reference in [
+            "LD0/GGIO1.Ind1(x).stVal",
+            "LD0/GGIO1.Ind1(-1).stVal",
+            "LD0/GGIO1.Ind1().stVal",
+            "LD0/GGIO1.Ind1(4294967296).stVal",
+        ] {
+            assert_eq!(decompose_reference(reference), (reference, None, None));
+        }
+    }
+
+    #[test]
+    fn an_unterminated_or_trailing_selector_leaves_the_reference_whole() {
+        for reference in [
+            "LD0/GGIO1.Ind1(2.stVal",
+            "LD0/GGIO1.Ind1(2)stVal",
+            "LD0/GGIO1.Ind1(2).",
+        ] {
+            assert_eq!(decompose_reference(reference), (reference, None, None));
+        }
+    }
+
+    /// Every `DataAccessError` alternative defined by ISO 9506-2.
+    const ALL_DATA_ACCESS_ERRORS: [DataAccessError; 12] = [
+        DataAccessError::ObjectInvalidated,
+        DataAccessError::HardwareFault,
+        DataAccessError::TemporarilyUnavailable,
+        DataAccessError::ObjectAccessDenied,
+        DataAccessError::ObjectUndefined,
+        DataAccessError::InvalidAddress,
+        DataAccessError::TypeUnsupported,
+        DataAccessError::TypeInconsistent,
+        DataAccessError::ObjectAttributeInconsistent,
+        DataAccessError::ObjectAccessUnsupported,
+        DataAccessError::ObjectNonExistent,
+        DataAccessError::ObjectValueInvalid,
+    ];
+
+    #[test]
+    fn every_data_access_error_has_a_distinct_name() {
+        let mut names: Vec<&str> = ALL_DATA_ACCESS_ERRORS
+            .iter()
+            .map(|e| data_access_name(*e))
+            .collect();
+        assert_eq!(names.len(), ALL_DATA_ACCESS_ERRORS.len());
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(
+            names.len(),
+            ALL_DATA_ACCESS_ERRORS.len(),
+            "two variants share a name"
+        );
+    }
+
+    #[test]
+    fn a_data_access_name_maps_back_to_its_variant() {
+        for variant in ALL_DATA_ACCESS_ERRORS {
+            assert_eq!(data_access_from_py(data_access_name(variant)), variant);
+            assert_eq!(
+                DataAccessError::from_code(variant.code()).expect("defined code"),
+                variant
+            );
+        }
+    }
+}

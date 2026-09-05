@@ -764,7 +764,7 @@ class IedConnection:
         ``IedServiceError`` when the server holds no such dataset.
 
         Enumerating the dataset *names* of a logical node is a different
-        service: ``get_logical_node_directory(ln_ref, AcsiClass.DS)``.
+        service: ``get_logical_node_directory(ln_ref, AcsiClass.DATASET)``.
         """
         raw = await self._native_conn.get_data_set_directory(ref)
         return DataSetDirectory(

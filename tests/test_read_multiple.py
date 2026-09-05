@@ -23,9 +23,8 @@ TARGETS = [
 ]
 VALUES = [True, False, 230.5]
 
-# Range of the MMS DataAccessError codes (ISO 9506-2). The exact code is not
-# pinned here; the symbolic name carries the semantics.
-DATA_ACCESS_CODE_MAX = 11
+# Wire code of the MMS DataAccessError `object-non-existent` (ISO 9506-2).
+OBJECT_NON_EXISTENT_CODE = 10
 
 
 async def test_read_multiple_returns_values_in_request_order(
@@ -77,7 +76,7 @@ async def test_read_multiple_lenient_marks_only_the_failing_entry(
         failure = results[3]
         assert isinstance(failure, iec61850.DataAccessFailure)
         assert failure.error == "ObjectNonExistent"
-        assert 0 <= failure.code <= DATA_ACCESS_CODE_MAX
+        assert failure.code == OBJECT_NON_EXISTENT_CODE
     finally:
         await conn.disconnect()
 

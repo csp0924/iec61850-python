@@ -633,7 +633,7 @@ await conn.create_data_set("DemoIEDLD0/LLN0.ds_clone", directory.members)
 ```
 
 Listing the data set *names* of a logical node is a different service:
-`get_logical_node_directory(ln_ref, iec61850.AcsiClass.DS)`.
+`get_logical_node_directory(ln_ref, iec61850.AcsiClass.DATASET)`.
 
 ### Reading several objects in one round trip
 
