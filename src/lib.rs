@@ -268,6 +268,12 @@ fn access_failure_dict(py: Python<'_>, err: RustDataAccessError) -> PyResult<Py<
 /// This is the inverse of the alternate-access composition applied to a data
 /// set member. A reference that carries no parenthesised decimal index is
 /// returned whole, with no index and no component.
+///
+/// The inverse holds for well-formed IEC 61850 object references only. Two
+/// shapes no such reference can take fall outside it: an empty component
+/// after the dot leaves the whole string in place of the parts it was
+/// composed from, and a base name that already carries a parenthesised
+/// decimal is split at that decimal, which was never an index.
 fn decompose_reference(reference: &str) -> (&str, Option<u32>, Option<&str>) {
     let Some(open) = reference.find('(') else {
         return (reference, None, None);
