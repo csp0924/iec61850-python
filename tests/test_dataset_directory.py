@@ -174,9 +174,9 @@ def test_documented_acsi_class_members_exist(origin: str) -> None:
 async def test_get_data_set_values_strict_and_lenient_agree(demo_server: str) -> None:
     """Every member of `dsStatus` resolves, so both modes return the values.
 
-    The server refuses a CreateDataSet naming a member it does not carry, so
-    a data set whose read fails per entry cannot be built over the wire; the
-    per-entry failure marker is covered end-to-end by `read_multiple`.
+    This is the all-success path only, and says nothing about how a failing
+    entry is reported: `test_dataset_value_mapping.py` covers the conversion
+    of a failure marker, and `read_multiple` covers one end to end.
     """
     conn = await iec61850.IedConnection.connect(demo_server)
     try:

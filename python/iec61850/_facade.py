@@ -801,11 +801,16 @@ class IedConnection:
         """Read every value of a dataset.
 
         Each entry follows the same conversion rules as ``read``. Under
-        ``strict`` (the default) a failing entry raises ``IedDataAccessError``;
-        otherwise it is a ``DataAccessFailure`` in its own position and the
-        other values stand.
+        ``strict`` (the default) a failing entry raises ``IedDataAccessError``
+        naming its index; otherwise it is a ``DataAccessFailure`` in its own
+        position and the other values stand.
         """
-        return await self._native_conn.get_data_set_values(ref, strict)
+        raw = await self._native_conn.get_data_set_values(ref, strict)
+        out: list[Any] = []
+        for entry in raw:
+            failure = _as_failure(entry)
+            out.append(entry if failure is None else failure)
+        return out
 
     async def read_multiple(
         self,
