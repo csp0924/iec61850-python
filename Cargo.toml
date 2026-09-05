@@ -26,7 +26,9 @@ iec61850-tls    = { git = "https://github.com/csp0924/iec61850-rust", tag = "v0.
 
 rustls              = { version = "0.23", default-features = false, features = ["ring", "tls12"] }
 tokio               = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
-pyo3                = { version = "0.28", features = ["extension-module", "abi3-py311"] }
+# `extension-module` is added by `[tool.maturin] features` when a wheel is
+# built; leaving it out here keeps `cargo test` linkable against libpython.
+pyo3                = { version = "0.28", features = ["abi3-py311"] }
 pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
 
 # `release_max_level_off` compiles out every `event!` in the transitive
