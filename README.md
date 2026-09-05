@@ -716,6 +716,21 @@ An over-long selector or a malformed AP-title raises `ValueError` when the
 parameters are built, before any socket is opened. An AP-title of `None` leaves
 that field out of the ACSE AARQ.
 
+Releases before 0.14.0 always offered empty presentation selectors and no
+AP-title or AE-qualifier at all. A peer configured to expect that addressing
+can be given it back:
+
+```python
+iso = iec61850.IsoConnectionParameters(
+    local_p_sel=b"",
+    remote_p_sel=b"",
+    local_ap_title=None,
+    remote_ap_title=None,
+    local_ae_qualifier=None,
+    remote_ae_qualifier=None,
+)
+```
+
 A peer that does not recognise the addressing it is offered answers the session
 CONNECT with a REFUSE SPDU, which surfaces as `IedSessionRefusedError`:
 

@@ -35,12 +35,15 @@ SESSION_CALLED_SSEL = 0x34
 PRESENTATION_CALLING_PSEL = 0x81
 PRESENTATION_CALLED_PSEL = 0x82
 
-# ACSE AARQ tags for the application-entity titles.
+# ACSE AARQ tags for the application-entity titles and qualifiers.
 ACSE_CALLED_AP_TITLE = 0xA2
+ACSE_CALLED_AE_QUALIFIER = 0xA3
 ACSE_CALLING_AP_TITLE = 0xA6
+ACSE_CALLING_AE_QUALIFIER = 0xA7
 
-# BER universal tag of an OBJECT IDENTIFIER.
+# BER universal tags of the values those fields wrap.
 BER_OBJECT_IDENTIFIER = 0x06
+BER_INTEGER = 0x02
 
 # Content octets of the default AP-titles, 1.1.1.999 and 1.1.1.999.1.
 DEFAULT_LOCAL_AP_TITLE_OID = bytes([0x29, 0x01, 0x87, 0x67])
@@ -63,6 +66,17 @@ CUSTOM = IsoConnectionParameters(
 CUSTOM_LOCAL_AP_TITLE_OID = bytes([0x2B, 0xCE, 0x0F, 0x0D])
 CUSTOM_REMOTE_AP_TITLE_OID = bytes([0x2B, 0xCE, 0x0F, 0x0D, 0x01])
 
+# The addressing releases before 0.14.0 offered: empty presentation selectors,
+# no application-entity title and no qualifier on either side.
+LEGACY = IsoConnectionParameters(
+    local_p_sel=b"",
+    remote_p_sel=b"",
+    local_ap_title=None,
+    remote_ap_title=None,
+    local_ae_qualifier=None,
+    remote_ae_qualifier=None,
+)
+
 CONNECT_TIMEOUT_MS = 2000
 
 
@@ -75,6 +89,18 @@ def ap_title_field(tag: int, oid_content: bytes) -> bytes:
     """The AARQ AP-title field wrapping an OBJECT IDENTIFIER."""
     inner = bytes([BER_OBJECT_IDENTIFIER, len(oid_content)]) + oid_content
     return bytes([tag, len(inner)]) + inner
+
+
+def has_aarq_field(spdu: bytes, tag: int, inner_tag: int) -> bool:
+    """Whether an AARQ field of `tag` is present, whatever value it carries.
+
+    The field tag is EXPLICIT, so the octets are the tag, a one-octet length
+    and then the tag of the value inside. Matching that pair finds the field
+    without assuming which OID or integer was offered.
+    """
+    return any(
+        spdu[i] == tag and spdu[i + 2] == inner_tag for i in range(len(spdu) - 2)
+    )
 
 
 def cotp_variable_part(cr: bytes) -> bytes:
@@ -159,6 +185,33 @@ async def test_a_none_ap_title_is_left_out_of_the_aarq() -> None:
         ap_title_field(ACSE_CALLING_AP_TITLE, DEFAULT_LOCAL_AP_TITLE_OID) not in spdu
     )
     assert ap_title_field(ACSE_CALLED_AP_TITLE, DEFAULT_REMOTE_AP_TITLE_OID) in spdu
+
+
+async def test_the_offer_of_earlier_releases_can_be_restored() -> None:
+    """The documented parameters reproduce the addressing 0.13.0 sent.
+
+    Empty presentation selectors still occupy their fields, as `81 00 82 00`
+    in the CP, and the AARQ carries neither AP-title nor AE-qualifier. The
+    default offer is captured beside it so the absence checks are shown to
+    see a field that is present.
+    """
+    _, spdu = await capture_offer(LEGACY)
+    _, default_spdu = await capture_offer(IsoConnectionParameters())
+
+    empty_psel_pair = selector_field(
+        PRESENTATION_CALLING_PSEL, b""
+    ) + selector_field(PRESENTATION_CALLED_PSEL, b"")
+    assert empty_psel_pair in spdu
+    assert empty_psel_pair not in default_spdu
+
+    for tag, inner_tag in (
+        (ACSE_CALLING_AP_TITLE, BER_OBJECT_IDENTIFIER),
+        (ACSE_CALLED_AP_TITLE, BER_OBJECT_IDENTIFIER),
+        (ACSE_CALLING_AE_QUALIFIER, BER_INTEGER),
+        (ACSE_CALLED_AE_QUALIFIER, BER_INTEGER),
+    ):
+        assert has_aarq_field(default_spdu, tag, inner_tag)
+        assert not has_aarq_field(spdu, tag, inner_tag)
 
 
 async def test_custom_parameters_still_associate(demo_server: str) -> None:
