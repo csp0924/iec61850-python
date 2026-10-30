@@ -925,8 +925,25 @@ A report the client accepts counts as traffic, so a client that only
 receives reports stays associated.
 
 The supported typed updates are `update_bool`, `update_int32`,
-`update_int64`, `update_uint32`, `update_float32`, `update_float64`, and
-`update_string`.
+`update_int64`, `update_uint32`, `update_float32`, `update_float64`,
+`update_string`, `update_bit_string`, and `update_bit_string_from_int`.
+
+A BIT STRING such as a `Dbpos` or a `Quality` is updated from its octets and
+padding, or from an int. The int form takes the declared size n of the
+attribute and writes `value` as an n-bit number, most significant bit first:
+bit 0 of the string, the first on the wire, carries 2**(n-1).
+
+```python
+# Dbpos: 0 intermediate, 1 off, 2 on, 3 bad. 2 is stored as 0x80, padding 6.
+server.update_bit_string_from_int("Bay/XCBR1.Pos.stVal", 2)
+
+# The same value from its octets; the unused trailing bits are stored as zero.
+server.update_bit_string("Bay/XCBR1.Pos.stVal", bytes([0x80]), 6)
+```
+
+The bit count has to fit the declared size, as a remote Write must: exactly
+two bits for a `Dbpos`, one to thirteen for a `Quality`. A mismatch raises
+`IedDataAccessError` and leaves the attribute unchanged.
 
 ### Server-side TLS
 

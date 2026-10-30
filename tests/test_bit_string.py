@@ -1,5 +1,6 @@
-"""BIT STRING values: tagged dicts from `on_read` and `write`, and the typed
-bit-string read and write on the client.
+"""BIT STRING values: tagged dicts from `on_read` and `write`, the typed
+bit-string read and write on the client, and the bit-string updates on the
+server.
 
 The model carries a double-point status, whose `stVal` is the two-bit
 `Dbpos`, and a `Dbpos` under FC=SP so a remote Write is accepted. `Dbpos`
@@ -9,6 +10,8 @@ packs its two bits into the top of one octet: the on state, `10`, is the octet
 
 from __future__ import annotations
 
+import asyncio
+import queue
 import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -16,7 +19,15 @@ from typing import Any
 
 import pytest
 
-from iec61850 import FC, IedConnection, IedDataAccessError, IedServer, Validity
+from iec61850 import (
+    FC,
+    ClientReport,
+    IedConnection,
+    IedDataAccessError,
+    IedServer,
+    RcbWriteMask,
+    Validity,
+)
 
 IED = "BitIED"
 LD = "Bay"
@@ -36,7 +47,12 @@ DBPOS_ON = {"type": "bit_string", "padding": 6, "data": b"\x80"}
 
 
 def _spec(pos_value: dict[str, Any] | None = None) -> dict[str, Any]:
-    pos_da: dict[str, Any] = {"name": "stVal", "fc": "ST", "type": "CodedEnum"}
+    pos_da: dict[str, Any] = {
+        "name": "stVal",
+        "fc": "ST",
+        "type": "CodedEnum",
+        "trg_ops": ["data_changed"],
+    }
     if pos_value is not None:
         pos_da["value"] = pos_value
     return {
@@ -54,7 +70,12 @@ def _spec(pos_value: dict[str, Any] | None = None) -> dict[str, Any]:
                                 "name": "Pos",
                                 "das": [
                                     pos_da,
-                                    {"name": "q", "fc": "ST", "type": "Quality"},
+                                    {
+                                        "name": "q",
+                                        "fc": "ST",
+                                        "type": "Quality",
+                                        "trg_ops": ["quality_changed"],
+                                    },
                                 ],
                             },
                             {
@@ -277,3 +298,173 @@ def test_from_model_spec_rejects_padding_past_seven() -> None:
         match=r"from_model_spec: \S+\.value\['padding'\] must be an int in 0\.\.=7",
     ):
         IedServer.from_model_spec(_spec(bad))
+
+
+# ── server-side bit-string updates ──────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("value", "data"), [(0, b"\x00"), (1, b"\x40"), (2, b"\x80"), (3, b"\xc0")]
+)
+async def test_update_bit_string_from_int_dbpos(value: int, data: bytes) -> None:
+    async with _session() as (server, conn):
+        server.update_bit_string_from_int(SRV_POS, value)
+        assert await conn.read_bit_string(POS, FC.ST) == (data, 6)
+
+
+async def test_update_bit_string_from_int_quality() -> None:
+    # Bit 1 of the thirteen, validity "invalid" (01), carries 2**11.
+    async with _session() as (server, conn):
+        server.update_bit_string_from_int(SRV_POS_Q, 1 << 11)
+        assert await conn.read_bit_string(POS_Q, FC.ST) == (b"\x40\x00", 3)
+        quality = await conn.read_quality(POS_Q, FC.ST)
+        assert quality.validity is Validity.INVALID
+
+
+async def test_update_bit_string_quality_bytes() -> None:
+    async with _session() as (server, conn):
+        server.update_bit_string(SRV_POS_Q, b"\x60\x00", 3)
+        assert await conn.read_bit_string(POS_Q, FC.ST) == (b"\x60\x00", 3)
+        quality = await conn.read_quality(POS_Q, FC.ST)
+        assert quality.validity is Validity.INVALID
+        assert quality.detail.overflow is True
+
+
+@pytest.mark.parametrize(
+    ("short_data", "short_padding"),
+    [(b"\x80", 7), (b"\x40", 6)],
+    ids=["one-bit", "two-bit"],
+)
+async def test_quality_written_short_takes_thirteen_bits_again(
+    short_data: bytes, short_padding: int
+) -> None:
+    """A Quality holds one to thirteen bits whatever length it holds now."""
+    async with _session() as (server, conn):
+        server.update_bit_string(SRV_POS_Q, short_data, short_padding)
+        assert await conn.read_bit_string(POS_Q, FC.ST) == (short_data, short_padding)
+        server.update_bit_string_from_int(SRV_POS_Q, 1 << 11)
+        assert await conn.read_bit_string(POS_Q, FC.ST) == (b"\x40\x00", 3)
+
+        server.update_bit_string(SRV_POS_Q, short_data, short_padding)
+        server.update_bit_string(SRV_POS_Q, b"\x60\x00", 3)
+        assert await conn.read_bit_string(POS_Q, FC.ST) == (b"\x60\x00", 3)
+
+        with pytest.raises(IedDataAccessError):
+            server.update_bit_string(SRV_POS_Q, b"\x60\x00", 2)
+        with pytest.raises(IedDataAccessError):
+            server.update_bit_string_from_int(SRV_POS_Q, 1 << 13)
+        assert await conn.read_bit_string(POS_Q, FC.ST) == (b"\x60\x00", 3)
+
+
+async def test_update_bit_string_stores_unused_bits_as_zero() -> None:
+    async with _session() as (server, conn):
+        server.update_bit_string(SRV_POS, b"\xff", 6)
+        assert await conn.read_bit_string(POS, FC.ST) == (b"\xc0", 6)
+
+
+@pytest.mark.parametrize(
+    ("update", "message"),
+    [
+        (lambda s: s.update_bit_string(SRV_POS, b"\xe0", 5), "type mismatch"),
+        (lambda s: s.update_bit_string(SRV_POS, b"\x80\x00", 0), "type mismatch"),
+        (lambda s: s.update_bit_string(SRV_COUNT, b"\x80", 6), "type mismatch"),
+        (lambda s: s.update_bit_string_from_int(SRV_POS, 4), "type mismatch"),
+        (lambda s: s.update_bit_string_from_int(SRV_COUNT, 1), "type mismatch"),
+    ],
+    ids=["three-bit-dbpos", "sixteen-bit-dbpos", "int32", "dbpos-4", "int32-int"],
+)
+async def test_update_bit_string_mismatch_leaves_the_value(
+    update: Any, message: str
+) -> None:
+    async with _session() as (server, conn):
+        server.update_bit_string_from_int(SRV_POS, 1)
+        server.update_int32(SRV_COUNT, 9)
+        with pytest.raises(IedDataAccessError, match=message):
+            update(server)
+        assert await conn.read_bit_string(POS, FC.ST) == (b"\x40", 6)
+        assert await conn.read_int32(COUNT, FC.ST) == 9
+
+
+@pytest.mark.parametrize(
+    ("data", "padding", "message"),
+    [
+        (b"\x80", 8, "update_bit_string: padding must be an int in 0..=7"),
+        (b"\x80", -1, "update_bit_string: padding must be an int in 0..=7"),
+        (b"", 2, "update_bit_string: padding must be 0 when the data is empty"),
+    ],
+)
+async def test_update_bit_string_invalid_padding_raises(
+    data: bytes, padding: int, message: str
+) -> None:
+    async with _session() as (server, conn):
+        server.update_bit_string_from_int(SRV_POS, 1)
+        with pytest.raises(ValueError, match=message):
+            server.update_bit_string(SRV_POS, data, padding)
+        assert await conn.read_bit_string(POS, FC.ST) == (b"\x40", 6)
+
+
+def test_update_bit_string_before_start_raises() -> None:
+    server = IedServer.from_model_spec(_spec())
+    with pytest.raises(RuntimeError, match="update_bit_string: server is not running"):
+        server.update_bit_string(SRV_POS, b"\x80", 6)
+    with pytest.raises(KeyError, match="update_bit_string_from_int"):
+        server.update_bit_string_from_int(f"{LD}/XCBR1.Pos.nope", 2)
+
+
+URCB = f"{DOMAIN}/LLN0$RP$urcbPos"
+MMS_POS = f"{DOMAIN}/XCBR1$ST$Pos$stVal"
+MMS_POS_Q = f"{DOMAIN}/XCBR1$ST$Pos$q"
+
+
+async def _next_report(
+    conn: IedConnection, sink: queue.Queue[ClientReport]
+) -> ClientReport:
+    """Poll until one report arrives; fail after four seconds."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 4.0
+    while loop.time() < deadline:
+        await conn.poll_reports(200)
+        try:
+            return sink.get_nowait()
+        except queue.Empty:
+            continue
+    raise AssertionError("no report arrived")
+
+
+async def test_bit_string_updates_trigger_reports() -> None:
+    """`stVal` reports a data change and `q` a quality change."""
+    server = IedServer.from_model_spec(_spec())
+    server.bind("127.0.0.1:0")
+    server.add_dataset("XCBR1$dsPos", [SRV_POS, SRV_POS_Q])
+    server.register_urcb(
+        f"{LD}/LLN0.urcbPos",
+        dataset="XCBR1$dsPos",
+        trg_ops=["data_changed", "quality_changed"],
+        opt_flds=["seq_num", "reason", "data_set", "data_reference"],
+        buf_tm_ms=10,
+    )
+    async with server:
+        conn = await IedConnection.connect(server.bound_addr)
+        try:
+            rcb = await conn.get_rcb_values(URCB)
+            rcb.resv = True
+            rcb.rpt_ena = True
+            await conn.set_rcb_values(rcb, RcbWriteMask.fields("resv", "rpt_ena"))
+            sink: queue.Queue[ClientReport] = queue.Queue()
+            await conn.install_report_handler(URCB, sink.put, rpt_id=URCB)
+
+            server.update_bit_string_from_int(SRV_POS, 2)
+            report = await _next_report(conn, sink)
+            [entry] = [e for e in report.entries if e.ref == MMS_POS]
+            assert entry.value == b"\x80"
+            assert entry.reason is not None
+            assert entry.reason.data_change and not entry.reason.quality_change
+
+            server.update_bit_string(SRV_POS_Q, b"\x60\x00", 3)
+            report = await _next_report(conn, sink)
+            [entry] = [e for e in report.entries if e.ref == MMS_POS_Q]
+            assert entry.value == b"\x60\x00"
+            assert entry.reason is not None
+            assert entry.reason.quality_change and not entry.reason.data_change
+        finally:
+            await conn.disconnect()

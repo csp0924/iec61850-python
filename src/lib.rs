@@ -6495,6 +6495,52 @@ impl PyIedServer {
         })
     }
 
+    /// Update a ``BIT_STRING`` data attribute, such as a ``Dbpos`` or a
+    /// ``Quality``, from its octets.
+    ///
+    /// `data` carries the bits first bit first, in the most significant bit
+    /// of the first octet; `padding` is the number of unused trailing bits in
+    /// the last octet, which are stored as zero. The bit count must fit the
+    /// declared size of the attribute as a remote Write must: exactly two
+    /// bits for a ``Dbpos``, one to thirteen for a ``Quality``. A ``Dbpos`` in
+    /// the on state is ``update_bit_string(path, b"\x80", 6)``.
+    ///
+    /// A `padding` outside 0..=7, or non-zero for empty `data`, raises
+    /// `ValueError`. An attribute that is not a bit string, or a bit count
+    /// that does not fit it, raises `IedDataAccessError` and leaves the
+    /// attribute unchanged. An accepted update triggers reports as the other
+    /// typed updates do.
+    fn update_bit_string(
+        &self,
+        path: &str,
+        data: Vec<u8>,
+        padding: Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        let padding = extract_bit_string_padding("update_bit_string", &padding, data.len())?;
+        self.with_da("update_bit_string", path, |s, da| {
+            s.update_bit_string(da, &data, padding)
+        })
+    }
+
+    /// Update a ``BIT_STRING`` data attribute of 1 to 32 bits from an int.
+    ///
+    /// With n the declared size of the attribute, `value` is taken as an
+    /// n-bit unsigned number written most significant bit first: bit 0 of the
+    /// string, the first on the wire, carries 2**(n-1) and bit n-1 carries 1.
+    /// A ``Dbpos`` is two bits, so 0 is intermediate (``b"\x00"``), 1 off
+    /// (``b"\x40"``), 2 on (``b"\x80"``) and 3 bad (``b"\xc0"``), each with
+    /// padding 6; a ``Quality`` is written as 13 bits.
+    ///
+    /// An attribute that is not a bit string, one wider than 32 bits, or a
+    /// `value` that does not fit in n bits raises `IedDataAccessError` and
+    /// leaves the attribute unchanged; a `value` outside 0..2**32 raises
+    /// `OverflowError`, as the other typed updates do.
+    fn update_bit_string_from_int(&self, path: &str, value: u32) -> PyResult<()> {
+        self.with_da("update_bit_string_from_int", path, |s, da| {
+            s.update_bit_string_from_int(da, value)
+        })
+    }
+
     fn __repr__(&self) -> String {
         let state = self.state.lock().unwrap();
         let tag = match &*state {
