@@ -271,6 +271,21 @@ async def test_write_bit_string_invalid_padding_sends_nothing(
         assert await conn.read_bit_string(SETPOINT, FC.SP) == (b"\x40", 6)
 
 
+async def test_remote_write_leaves_the_unused_bits_of_a_bit_string_clear() -> None:
+    seen: list[object] = []
+
+    def writer(_path: str, value: object) -> bool:
+        seen.append(value)
+        return True
+
+    async with _session() as (server, conn):
+        server.on_write(SRV_SETPOINT, writer)
+        await conn.write_bit_string(SETPOINT, FC.SP, b"\xff", 6)
+        assert await conn.read_bit_string(SETPOINT, FC.SP) == (b"\xc0", 6)
+        assert await conn.read(SETPOINT, FC.SP) == b"\xc0"
+    assert seen == [b"\xc0"]
+
+
 async def test_write_bit_string_sends_unused_bits_as_zero() -> None:
     async with _session() as (_, conn):
         await conn.write_bit_string(SETPOINT, FC.SP, b"\xff", 6)
