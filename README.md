@@ -117,7 +117,7 @@ The Rust side is not vendored. `Cargo.toml` takes each crate from the
 implementation repository at a release tag:
 
 ```toml
-iec61850-client = { git = "https://github.com/csp0924/iec61850-rust", tag = "v0.2.0", features = ["tls"] }
+iec61850-client = { git = "https://github.com/csp0924/iec61850-rust", tag = "v0.3.0", features = ["tls"] }
 ```
 
 Once that tag exists, a build is just:
@@ -160,7 +160,7 @@ config alone is not enough — resolution fails with:
 
 ```
 failed to load source for dependency `iec61850-client`
-  Unable to update https://github.com/csp0924/iec61850-rust?tag=v0.2.0
+  Unable to update https://github.com/csp0924/iec61850-rust?tag=v0.3.0
 ```
 
 Seed a lock file once and the patch takes over. Cargo's git backend needs an
@@ -173,14 +173,14 @@ repository root, with the sibling checkout in place:
 RUST_REPO=$(cd ../iec61850-rust && { pwd -W 2>/dev/null || pwd; })
 
 # 1. Point the manifest at that checkout, just long enough to resolve.
-sed -i "s|https://github.com/csp0924/iec61850-rust\", tag = \"v0.2.0|file://${RUST_REPO}\", branch = \"main|g" Cargo.toml
+sed -i "s|https://github.com/csp0924/iec61850-rust\", tag = \"v0.3.0|file://${RUST_REPO}\", branch = \"main|g" Cargo.toml
 cargo generate-lockfile
 
 # 2. Restore the manifest and relabel the source lines the lock recorded.
 #    Cargo canonicalises the URL it stores, so match on the branch suffix
 #    rather than on the exact spelling passed in above.
 git checkout Cargo.toml
-sed -i -E "s|git\+file://[^\"]*\?branch=main|git+https://github.com/csp0924/iec61850-rust?tag=v0.2.0|g" Cargo.lock
+sed -i -E "s|git\+file://[^\"]*\?branch=main|git+https://github.com/csp0924/iec61850-rust?tag=v0.3.0|g" Cargo.lock
 ```
 
 `Cargo.lock` is git-ignored for the same reason: it pins a revision the
@@ -190,7 +190,7 @@ offline and reports the patched packages coming from
 against your working tree — edits on the Rust side are picked up without a
 commit.
 
-Once `v0.2.0` is tagged, delete `.cargo/config.toml` and `Cargo.lock` and build
+Once `v0.3.0` is tagged, delete `.cargo/config.toml` and `Cargo.lock` and build
 normally; none of this is needed any more.
 
 ## Conformance (PICS)
@@ -1318,6 +1318,49 @@ except iec61850.IedError:
 ```
 
 ## Release notes
+
+### 0.15.0
+
+Tracks iec61850-rust v0.3.0, whose server limits and checks change what a
+client and a hosted server observe; the entries below say how.
+
+- `IedConnection.read_bit_string` and `write_bit_string` — typed access to a
+  BIT STRING attribute as its data octets and padding count, most significant
+  bit first: a `Dbpos` of on is `(b"", 6)`.
+- Tagged values — `on_read` callbacks, `IedConnection.write`,
+  `set_data_set_values`, `log_value` and the control `select_with_value`,
+  `operate` and `cancel` accept the `{"type": ...}` dictionaries
+  `from_model_spec` takes, so a callback can answer a `Dbpos` read with
+  `{"type": "bit_string", "padding": 6, "data": b""}`.
+- `IedServer.association_setup_timeout_ms`, `association_idle_timeout_ms`,
+  `association_send_timeout_ms`, `max_dynamic_datasets` and
+  `max_dynamic_datasets_per_association` — settable before `start()`.
+- A hosted server closes a connection that has not completed the MMS Initiate
+  within 10 s of being accepted, aborts an association that neither sends nor
+  receives a PDU for 300 s (a client that only receives reports stays
+  connected), and closes a connection whose peer stops accepting PDUs for
+  10 s.
+- A hosted server bounds the data sets clients create at run time, 64 in total
+  and 16 per association by default; past either limit CreateDataSet fails
+  with `IedServiceError`.
+- `max_connections` counts a connection from the moment it is accepted rather
+  than from a completed Initiate.
+- SetDataSetValues applies the checks of a single write to every member: a
+  member under a read-only functional constraint, or one the `on_write`
+  handler refuses, keeps its value and reports an error while the others are
+  written.
+- URCB reservations and control selections are released when a connection
+  ends on a transport or protocol error as well as on a normal close, and a
+  setting-group edit session is released whenever its connection closes. BRCB
+  reservations still wait for `ResvTms`, so a client can resume after
+  reconnecting.
+- Read and Write requests are decoded under the nesting level the association
+  negotiated. A reassembled TSDU past 73 192 bytes on the client, or past the
+  negotiated PDU size plus 8 192 bytes on the server, closes the connection.
+- `from_model_spec` refuses a tagged `bit_string` whose `padding` is outside
+  0..=7, or non-zero with empty data. When an `on_read` return value cannot be
+  converted, the reason is printed through the standard exception hook before
+  the read fails with `TypeInconsistent`.
 
 ### 0.14.0
 
