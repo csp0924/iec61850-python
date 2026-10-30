@@ -1101,9 +1101,10 @@ impl PyIedConnection {
     ///
     /// `data` carries the bits first bit first, in the most significant bit
     /// of the first octet; `padding` is the number of unused trailing bits in
-    /// the last octet, 0..=7, and 0 when `data` is empty. A ``Dbpos`` set to
-    /// the on state is ``write_bit_string(ref, fc, b"\x80", 6)``. An invalid
-    /// `padding` raises `ValueError` before anything is sent.
+    /// the last octet, 0..=7, and 0 when `data` is empty; those bits are sent
+    /// as zero. A ``Dbpos`` set to the on state is
+    /// ``write_bit_string(ref, fc, b"\x80", 6)``. An invalid `padding` raises
+    /// `ValueError` before anything is sent.
     fn write_bit_string<'py>(
         &self,
         py: Python<'py>,
@@ -1114,15 +1115,9 @@ impl PyIedConnection {
     ) -> PyResult<Bound<'py, PyAny>> {
         let conn = Arc::clone(&self.inner);
         let fc = parse_fc(&fc)?;
-        let invalid = |required: &str| {
-            PyValueError::new_err(format!("write_bit_string: padding must be {required}"))
-        };
-        let padding: u8 = padding.extract().map_err(|_| invalid(PADDING_RANGE))?;
-        if let Some(required) = bit_string_padding_requirement(data.len(), padding) {
-            return Err(invalid(required));
-        }
+        let padding = extract_bit_string_padding("write_bit_string", &padding, data.len())?;
         future_into_py(py, async move {
-            conn.write_object(&reference, fc, RustMmsValue::BitString { padding, data })
+            conn.write_bit_string(&reference, fc, data, padding)
                 .await
                 .map_err(|e| map_client_error(e, ErrCtx::Service))?;
             Ok(())
@@ -1161,7 +1156,8 @@ impl PyIedConnection {
     /// converted with the same rules). A ``dict`` is a tagged value, the form
     /// ``IedServer.from_model_spec`` takes, for a type none of those selects:
     /// ``{"type": "bit_string", "padding": 6, "data": b"\x80"}`` writes a
-    /// BIT STRING, as ``write_bit_string`` does.
+    /// BIT STRING with its unused trailing bits sent as zero, as
+    /// ``write_bit_string`` does.
     fn write_object<'py>(
         &self,
         py: Python<'py>,
@@ -4952,6 +4948,23 @@ fn bit_string_padding_requirement(data_len: usize, padding: u8) -> Option<&'stat
     }
 }
 
+/// Reads `padding`, the number of unused trailing bits of a BIT STRING of
+/// `data_len` octets, as a `u8`. Raises `ValueError` naming `caller` when it is
+/// not an int in 0..=7, or is non-zero for empty data.
+fn extract_bit_string_padding(
+    caller: &str,
+    padding: &Bound<'_, PyAny>,
+    data_len: usize,
+) -> PyResult<u8> {
+    let invalid =
+        |required: &str| PyValueError::new_err(format!("{caller}: padding must be {required}"));
+    let padding: u8 = padding.extract().map_err(|_| invalid(PADDING_RANGE))?;
+    match bit_string_padding_requirement(data_len, padding) {
+        Some(required) => Err(invalid(required)),
+        None => Ok(padding),
+    }
+}
+
 /// Convert a tagged value dict, ``{"type": <tag>, ...}``, to an ``MmsValue``.
 ///
 /// Tags and their keys: ``bool`` / ``int`` / ``uint`` / ``float32`` /
@@ -4959,8 +4972,9 @@ fn bit_string_padding_requirement(data_len: usize, padding: u8) -> Option<&'stat
 /// ``utc_time`` (8 bytes) / ``binary_time`` (4 or 6 bytes) carry ``value``;
 /// ``bit_string`` carries ``data`` (bytes) and ``padding``, the number of
 /// unused trailing bits in the last octet (0..=7, and 0 when ``data`` is
-/// empty); ``default`` carries nothing and resolves to the zero value of
-/// `default_for`, so it is refused when `default_for` is `None`.
+/// empty), which are cleared to zero; ``default`` carries nothing and
+/// resolves to the zero value of `default_for`, so it is refused when
+/// `default_for` is `None`.
 ///
 /// `what` names the dict at the start of every error message.
 fn tagged_value_to_mms_value(
@@ -5058,11 +5072,14 @@ fn tagged_value_to_mms_value(
             let padding: u8 = field("padding")?
                 .extract()
                 .map_err(|_| invalid("padding", PADDING_RANGE))?;
-            let data: Vec<u8> = field("data")?
+            let mut data: Vec<u8> = field("data")?
                 .extract()
                 .map_err(|_| invalid("data", "bytes"))?;
             if let Some(required) = bit_string_padding_requirement(data.len(), padding) {
                 return Err(invalid("padding", required));
+            }
+            if let Some(last) = data.last_mut() {
+                *last &= 0xFF << padding;
             }
             Ok(RustMmsValue::BitString { padding, data })
         }

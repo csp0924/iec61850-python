@@ -590,7 +590,8 @@ class IedConnection:
 
         ``data`` and ``padding`` take the layout ``read_bit_string`` returns;
         ``padding`` must be 0..7, and 0 when ``data`` is empty, or
-        ``ValueError`` is raised before anything is sent.
+        ``ValueError`` is raised before anything is sent. The unused trailing
+        bits are sent as zero.
         """
         await self._native_conn.write_bit_string(ref, fc, data, padding)
 

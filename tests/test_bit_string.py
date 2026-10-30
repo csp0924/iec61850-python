@@ -161,6 +161,36 @@ async def test_write_tagged_bit_string_round_trip() -> None:
         assert await conn.read_bit_string(SETPOINT, FC.SP) == (b"\x80", 6)
 
 
+async def test_tagged_bit_string_clears_the_unused_bits() -> None:
+    tagged = {"type": "bit_string", "padding": 6, "data": b"\xff"}
+    async with _session({SRV_POS: lambda _p: tagged}) as (_, conn):
+        await conn.write(SETPOINT, FC.SP, tagged)
+        assert await conn.read_bit_string(SETPOINT, FC.SP) == (b"\xc0", 6)
+        assert await conn.read_bit_string(POS, FC.ST) == (b"\xc0", 6)
+
+
+@pytest.mark.parametrize(
+    "tagged",
+    [
+        {"type": "bit_string", "padding": 0, "data": b""},
+        {"type": "bit_string", "padding": 5, "data": b"\xe0"},
+        {"type": "bit_string", "padding": 3, "data": b"\x80\x00"},
+    ],
+    ids=["empty", "three-bit", "thirteen-bit"],
+)
+async def test_bit_string_of_the_wrong_length_is_refused(
+    tagged: dict[str, Any],
+) -> None:
+    """A Dbpos is exactly two bits, on a Write and from on_read alike."""
+    async with _session({SRV_POS: lambda _p: tagged}) as (_, conn):
+        await conn.write(SETPOINT, FC.SP, DBPOS_ON)
+        with pytest.raises(IedDataAccessError):
+            await conn.write(SETPOINT, FC.SP, tagged)
+        assert await conn.read_bit_string(SETPOINT, FC.SP) == (b"\x80", 6)
+        with pytest.raises(IedDataAccessError):
+            await conn.read_bit_string(POS, FC.ST)
+
+
 @pytest.mark.parametrize(
     ("tagged", "message"),
     [
@@ -218,6 +248,12 @@ async def test_write_bit_string_invalid_padding_sends_nothing(
         with pytest.raises(ValueError, match=message):
             await conn.write_bit_string(SETPOINT, FC.SP, data, padding)
         assert await conn.read_bit_string(SETPOINT, FC.SP) == (b"\x40", 6)
+
+
+async def test_write_bit_string_sends_unused_bits_as_zero() -> None:
+    async with _session() as (_, conn):
+        await conn.write_bit_string(SETPOINT, FC.SP, b"\xff", 6)
+        assert await conn.read_bit_string(SETPOINT, FC.SP) == (b"\xc0", 6)
 
 
 async def test_read_bit_string_of_another_type_raises() -> None:
