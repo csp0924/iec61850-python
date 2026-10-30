@@ -117,7 +117,7 @@ The Rust side is not vendored. `Cargo.toml` takes each crate from the
 implementation repository at a release tag:
 
 ```toml
-iec61850-client = { git = "https://github.com/csp0924/iec61850-rust", tag = "v0.3.0", features = ["tls"] }
+iec61850-client = { git = "https://github.com/csp0924/iec61850-rust", tag = "v0.3.1", features = ["tls"] }
 ```
 
 Once that tag exists, a build is just:
@@ -160,7 +160,7 @@ config alone is not enough — resolution fails with:
 
 ```
 failed to load source for dependency `iec61850-client`
-  Unable to update https://github.com/csp0924/iec61850-rust?tag=v0.3.0
+  Unable to update https://github.com/csp0924/iec61850-rust?tag=v0.3.1
 ```
 
 Seed a lock file once and the patch takes over. Cargo's git backend needs an
@@ -173,14 +173,14 @@ repository root, with the sibling checkout in place:
 RUST_REPO=$(cd ../iec61850-rust && { pwd -W 2>/dev/null || pwd; })
 
 # 1. Point the manifest at that checkout, just long enough to resolve.
-sed -i "s|https://github.com/csp0924/iec61850-rust\", tag = \"v0.3.0|file://${RUST_REPO}\", branch = \"main|g" Cargo.toml
+sed -i "s|https://github.com/csp0924/iec61850-rust\", tag = \"v0.3.1|file://${RUST_REPO}\", branch = \"main|g" Cargo.toml
 cargo generate-lockfile
 
 # 2. Restore the manifest and relabel the source lines the lock recorded.
 #    Cargo canonicalises the URL it stores, so match on the branch suffix
 #    rather than on the exact spelling passed in above.
 git checkout Cargo.toml
-sed -i -E "s|git\+file://[^\"]*\?branch=main|git+https://github.com/csp0924/iec61850-rust?tag=v0.3.0|g" Cargo.lock
+sed -i -E "s|git\+file://[^\"]*\?branch=main|git+https://github.com/csp0924/iec61850-rust?tag=v0.3.1|g" Cargo.lock
 ```
 
 `Cargo.lock` is git-ignored for the same reason: it pins a revision the
@@ -190,7 +190,7 @@ offline and reports the patched packages coming from
 against your working tree — edits on the Rust side are picked up without a
 commit.
 
-Once `v0.3.0` is tagged, delete `.cargo/config.toml` and `Cargo.lock` and build
+Once `v0.3.1` is tagged, delete `.cargo/config.toml` and `Cargo.lock` and build
 normally; none of this is needed any more.
 
 ## Conformance (PICS)
@@ -1336,6 +1336,32 @@ except iec61850.IedError:
 
 ## Release notes
 
+### 0.15.1
+
+Tracks iec61850-rust v0.3.1.
+
+- `IedServer.update_bit_string(path, data, padding)` and
+  `IedServer.update_bit_string_from_int(path, value)` — update a BIT STRING
+  attribute such as a `Dbpos` or a `Quality` on a running server. The bit
+  count has to fit the declared size of the attribute, exactly 2 for a `Dbpos`
+  and 1 to 13 for a `Quality`, or the call raises `IedDataAccessError` and the
+  value stays. `update_bit_string_from_int` writes an unsigned value as many
+  bits wide as the declared size, most significant bit first, so a `Dbpos` of
+  2 is stored as `b"\x80"` with padding 6. Both trigger reports by the trigger
+  options of the attribute.
+- `write_bit_string` and the tagged `bit_string` value, wherever it is
+  accepted, clear the unused trailing bits of the last octet before the value
+  is sent or stored; they used to pass them through.
+- A remote Write, a SetDataSetValues member or an `on_read` return value whose
+  bit string does not fit the declared size of the attribute is refused: the
+  Write fails with `IedDataAccessError` and leaves the value, and the read
+  answers object-value-invalid. Only the type used to be checked, so an empty
+  or 13-bit string could replace a two-bit `Dbpos`.
+- A typed update of an attribute whose trigger options name `qchg` and not
+  `dchg`, such as `q`, triggers a quality change, so a report control block
+  enabled for `dchg` alone no longer reports it; every update used to count as
+  a data change.
+
 ### 0.15.0
 
 Tracks iec61850-rust v0.3.0, whose server limits and checks change what a
@@ -1343,12 +1369,12 @@ client and a hosted server observe; the entries below say how.
 
 - `IedConnection.read_bit_string` and `write_bit_string` — typed access to a
   BIT STRING attribute as its data octets and padding count, most significant
-  bit first: a `Dbpos` of on is `(b"", 6)`.
+  bit first: a `Dbpos` of on is `(b"\x80", 6)`.
 - Tagged values — `on_read` callbacks, `IedConnection.write`,
   `set_data_set_values`, `log_value` and the control `select_with_value`,
   `operate` and `cancel` accept the `{"type": ...}` dictionaries
   `from_model_spec` takes, so a callback can answer a `Dbpos` read with
-  `{"type": "bit_string", "padding": 6, "data": b""}`.
+  `{"type": "bit_string", "padding": 6, "data": b"\x80"}`.
 - `IedServer.association_setup_timeout_ms`, `association_idle_timeout_ms`,
   `association_send_timeout_ms`, `max_dynamic_datasets` and
   `max_dynamic_datasets_per_association` — settable before `start()`.
