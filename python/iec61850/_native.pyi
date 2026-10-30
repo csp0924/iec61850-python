@@ -288,7 +288,9 @@ class IedServer:
     Construct with :meth:`from_scl`, :meth:`from_scl_str`, or
     :meth:`from_model_spec`. Configure with :meth:`bind`, :meth:`with_tls`,
     and the ``max_connections`` / ``vendor`` / ``model_name`` / ``revision``
-    setters. Start via ``async with`` or :meth:`start` / :meth:`stop`.
+    setters, and the ``association_*_timeout_ms`` and
+    ``max_dynamic_datasets*`` limits. Start via ``async with`` or
+    :meth:`start` / :meth:`stop`.
     """
 
     @classmethod
@@ -315,6 +317,11 @@ class IedServer:
     ) -> None: ...
 
     max_connections: int  # setter only on the Rust side; treated as attribute in stub
+    association_setup_timeout_ms: int  # setter only
+    association_idle_timeout_ms: int | None  # setter only
+    association_send_timeout_ms: int  # setter only
+    max_dynamic_datasets: int  # setter only
+    max_dynamic_datasets_per_association: int  # setter only
     vendor: str | None
     model_name: str | None
     revision: str | None

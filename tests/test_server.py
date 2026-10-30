@@ -211,6 +211,69 @@ async def test_config_setters_locked_after_start() -> None:
             s.bind("127.0.0.1:1")
 
 
+async def test_association_limits_locked_after_start() -> None:
+    s = IedServer.from_scl_str(SERVER_SCL, ied_name="IED1")
+    s.bind("127.0.0.1:0")
+    s.association_setup_timeout_ms = 5_000
+    s.association_idle_timeout_ms = None
+    s.association_send_timeout_ms = 5_000
+    s.max_dynamic_datasets = 8
+    s.max_dynamic_datasets_per_association = 2
+    async with s:
+        for name, value in [
+            ("association_setup_timeout_ms", 1),
+            ("association_idle_timeout_ms", 1),
+            ("association_send_timeout_ms", 1),
+            ("max_dynamic_datasets", 1),
+            ("max_dynamic_datasets_per_association", 1),
+        ]:
+            with pytest.raises(RuntimeError, match=f"{name}: cannot reconfigure"):
+                setattr(s, name, value)
+
+
+async def test_dynamic_data_set_limits_are_applied() -> None:
+    """Each quota set before start() caps CreateDataSet on its own scope."""
+    from iec61850 import DataSetMember, IedServiceError
+
+    member = [DataSetMember(object_ref="IED1GenericIO/GGIO1.Ind1.stVal", fc=FC.ST)]
+    s = IedServer.from_scl_str(SERVER_SCL, ied_name="IED1")
+    s.bind("127.0.0.1:0")
+    s.max_dynamic_datasets_per_association = 1
+    s.max_dynamic_datasets = 2
+    async with s:
+        first = await IedConnection.connect(s.bound_addr)
+        second = await IedConnection.connect(s.bound_addr)
+        third = await IedConnection.connect(s.bound_addr)
+        try:
+            await first.create_data_set("IED1GenericIO/LLN0.dsOne", member)
+            with pytest.raises(IedServiceError):
+                await first.create_data_set("IED1GenericIO/LLN0.dsTwo", member)
+            await second.create_data_set("IED1GenericIO/LLN0.dsTwo", member)
+            with pytest.raises(IedServiceError):
+                await third.create_data_set("IED1GenericIO/LLN0.dsThree", member)
+            assert await first.delete_data_set("IED1GenericIO/LLN0.dsOne") is True
+            await third.create_data_set("IED1GenericIO/LLN0.dsThree", member)
+        finally:
+            for conn in (first, second, third):
+                await conn.disconnect()
+
+
+async def test_association_setup_timeout_closes_a_silent_socket() -> None:
+    """A socket that never associates is closed once the setup time passes."""
+    s = IedServer.from_scl_str(SERVER_SCL, ied_name="IED1")
+    s.bind("127.0.0.1:0")
+    s.association_setup_timeout_ms = 100
+    async with s:
+        host, port = s.bound_addr.rsplit(":", 1)
+        reader, writer = await asyncio.open_connection(host, int(port))
+        try:
+            # The default setup time is 10 s; well before it, the server has
+            # closed the socket and the read sees end of stream.
+            assert await asyncio.wait_for(reader.read(1), timeout=5.0) == b""
+        finally:
+            writer.close()
+
+
 # ── update_* methods ────────────────────────────────────────────────────────
 
 

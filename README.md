@@ -69,7 +69,8 @@ Rust crate.
   MMS server from an SCL document, or `IedServer.from_model_spec(spec)` from
   a declarative Python dict when the IED is generated in code rather than
   authored as XML. Bind, configure (vendor / model name /
-  max connections), enter via `async with`, push value updates with typed
+  max connections / association timeouts / run-time data set limits), enter
+  via `async with`, push value updates with typed
   `update_*` methods, intercept reads / writes with `on_read` / `on_write`
   callbacks, serve control commands (SBO / direct, normal / enhanced)
   with `on_control` — `operate` and `wait` callbacks may be either sync
@@ -885,11 +886,24 @@ async def main():
 asyncio.run(main())
 ```
 
-Configuration setters (`vendor`, `model_name`, `revision`, `max_connections`)
-must be called before `start()`. Updating an unknown path raises `KeyError`;
-a type mismatch (e.g. pushing `update_float32` to a `BOOLEAN` attribute)
-raises `IedDataAccessError`. Bind failures and other lifecycle errors
-surface as `IedServerError`.
+Configuration setters (`vendor`, `model_name`, `revision`, `max_connections`,
+and the association limits below) must be called before `start()`. Updating
+an unknown path raises `KeyError`; a type mismatch (e.g. pushing
+`update_float32` to a `BOOLEAN` attribute) raises `IedDataAccessError`. Bind
+failures and other lifecycle errors surface as `IedServerError`.
+
+The server bounds what a client can hold open:
+
+| Setter                                 | Default | Effect                                                                   |
+|----------------------------------------|---------|--------------------------------------------------------------------------|
+| `association_setup_timeout_ms`         | 10 000  | a connection that has not associated by then is closed                   |
+| `association_idle_timeout_ms`          | 300 000 | an association with no traffic for this long is aborted; `None` keeps it |
+| `association_send_timeout_ms`          | 10 000  | a client that does not accept a PDU within this time is disconnected     |
+| `max_dynamic_datasets`                 | 64      | data sets clients may create at run time, across all associations       |
+| `max_dynamic_datasets_per_association` | 16      | run-time data sets one association may have created                      |
+
+A report the client accepts counts as traffic, so a client that only
+receives reports stays associated.
 
 The supported typed updates are `update_bool`, `update_int32`,
 `update_int64`, `update_uint32`, `update_float32`, `update_float64`, and

@@ -2964,7 +2964,7 @@ unsafe impl Sync for DaPtr {}
 enum ServerState {
     NotStarted {
         bind_addr: Option<SocketAddr>,
-        config: RustIedServerConfig,
+        config: Box<RustIedServerConfig>,
         pending_handlers: Vec<PendingHandler>,
         pending_tls: Option<PendingTls>,
     },
@@ -3229,7 +3229,7 @@ async fn server_do_start(
     let mut builder = RustIedServer::builder()
         .model(Arc::clone(model))
         .bind(bind_addr)
-        .config(config);
+        .config(*config);
     if let Some(pt) = pending_tls {
         builder = builder.with_tls(build_tls_acceptor(&pt)?);
     }
@@ -3411,7 +3411,7 @@ impl PyIedServer {
         PyIedServer {
             state: Arc::new(std::sync::Mutex::new(ServerState::NotStarted {
                 bind_addr: None,
-                config: RustIedServerConfig::default(),
+                config: Box::default(),
                 pending_handlers: Vec::new(),
                 pending_tls: None,
             })),
@@ -3598,6 +3598,25 @@ impl PyIedServer {
         let domain = ld.domain_name(&self.model.ied_name);
         let mms_path = format!("{domain}/{ln_name}${fc}${rcb_name}");
         Ok((domain, ln_name.to_string(), rcb_name.to_string(), mms_path))
+    }
+
+    /// Applies `apply` to the configuration the server will start with.
+    /// Raises `RuntimeError` naming `setting` once the server has started.
+    fn with_pending_config(
+        &self,
+        setting: &str,
+        apply: impl FnOnce(&mut RustIedServerConfig),
+    ) -> PyResult<()> {
+        let mut state = self.state.lock().unwrap();
+        match &mut *state {
+            ServerState::NotStarted { config, .. } => {
+                apply(config);
+                Ok(())
+            }
+            _ => Err(PyRuntimeError::new_err(format!(
+                "{setting}: cannot reconfigure after start()"
+            ))),
+        }
     }
 
     /// Translate a user-facing `"LD/LN.DO.DA[.sub]*"` path into the
@@ -5349,6 +5368,58 @@ impl PyIedServer {
                 "max_connections: cannot reconfigure after start()",
             )),
         }
+    }
+
+    /// Time an accepted connection has to complete the TLS handshake, when
+    /// TLS is configured, and the MMS Initiate exchange; a connection that has
+    /// not associated by then is closed. ``0`` closes every connection as soon
+    /// as it is accepted. Defaults to 10 000 ms.
+    #[setter]
+    fn set_association_setup_timeout_ms(&self, value: u64) -> PyResult<()> {
+        self.with_pending_config("association_setup_timeout_ms", |config| {
+            config.association_setup_timeout_ms = value;
+        })
+    }
+
+    /// Time an established association may go without receiving a PDU or
+    /// completing the send of one before the server aborts it. A report the
+    /// client accepts counts as activity. ``None`` keeps an idle association
+    /// open indefinitely; ``0`` aborts an association as soon as it waits for
+    /// a PDU. Defaults to 300 000 ms.
+    #[setter]
+    fn set_association_idle_timeout_ms(&self, value: Option<u64>) -> PyResult<()> {
+        self.with_pending_config("association_idle_timeout_ms", |config| {
+            config.association_idle_timeout_ms = value;
+        })
+    }
+
+    /// Time the client has to accept each PDU the server sends; a client that
+    /// stops reading has its connection closed. ``0`` closes the connection on
+    /// any send that does not complete at once. Defaults to 10 000 ms.
+    #[setter]
+    fn set_association_send_timeout_ms(&self, value: u64) -> PyResult<()> {
+        self.with_pending_config("association_send_timeout_ms", |config| {
+            config.association_send_timeout_ms = value;
+        })
+    }
+
+    /// Maximum number of data sets clients may create at run time, across all
+    /// associations. A further CreateDataSet is refused until one is deleted.
+    /// Defaults to 64.
+    #[setter]
+    fn set_max_dynamic_datasets(&self, value: usize) -> PyResult<()> {
+        self.with_pending_config("max_dynamic_datasets", |config| {
+            config.max_dynamic_datasets = value;
+        })
+    }
+
+    /// Maximum number of run-time data sets one open association may have
+    /// created. Defaults to 16.
+    #[setter]
+    fn set_max_dynamic_datasets_per_association(&self, value: usize) -> PyResult<()> {
+        self.with_pending_config("max_dynamic_datasets_per_association", |config| {
+            config.max_dynamic_datasets_per_association = value;
+        })
     }
 
     #[setter]
