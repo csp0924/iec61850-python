@@ -11,9 +11,7 @@ from __future__ import annotations
 import asyncio
 import queue
 
-import pytest
-
-from iec61850 import IedConnection, IedServer, RcbWriteMask
+from iec61850 import FC, IedConnection, IedServer, RcbWriteMask
 
 # Minimal SCL: LLN0 plus GGIO1 carrying a Boolean status point, a Float32
 # measurand, and an Int32 setpoint.
@@ -71,6 +69,9 @@ URCB_MMS = "IED1GenericIO/LLN0$RP$urcb01"
 BRCB_MMS = "IED1GenericIO/LLN0$BR$brcb01"
 IND1_SERVER = "GenericIO/GGIO1.Ind1.stVal"
 ANIN1_SERVER = "GenericIO/GGIO1.AnIn1.mag.f"
+IND1_MMS = "IED1GenericIO/GGIO1$ST$Ind1$stVal"
+ANIN1_MMS = "IED1GenericIO/GGIO1$MX$AnIn1$mag$f"
+BRCB_REF = "IED1GenericIO/LLN0.brcb01"
 
 
 async def _wait_for_report(
@@ -191,17 +192,73 @@ async def test_python_hosted_urcb_fires_on_update_float32() -> None:
             await conn.disconnect()
 
 
-@pytest.mark.skip(
-    reason="GetBRCBValues is not answered yet: reading `<domain>/LLN0$BR$<name>` "
-    "returns ObjectAccessUnsupported. The server-side default RptID this case "
-    "would check is covered by a unit test in the server crate."
-)
-async def test_python_hosted_brcb_fires_on_update_bool() -> None:
-    """The buffered counterpart: a Boolean change must reach the client.
+async def test_report_entry_of_an_omitted_member_carries_no_reason() -> None:
+    """A member a report leaves out carries no inclusion reason.
 
-    A BRCB runs its own trigger and tick path, separate from the URCB one.
-    No RptID is passed, so the server has to default it to the MMS path per
-    IEC 61850-7-2.
+    The first report carries `Ind1`, the second only `AnIn1`; in the second the
+    `Ind1` entry keeps its previous value but must not look as if it had
+    triggered the report.
+    """
+    s = IedServer.from_scl_str(SERVER_SCL, ied_name="IED1")
+    s.bind("127.0.0.1:0")
+    s.add_dataset("GGIO1$ds1", [IND1_SERVER, ANIN1_SERVER])
+    s.register_urcb(
+        "GenericIO/LLN0.urcb01",
+        dataset="GGIO1$ds1",
+        trg_ops=["data_changed"],
+        opt_flds=["seq_num", "reason", "data_set", "data_reference"],
+        buf_tm_ms=10,
+    )
+    async with s:
+        conn = await IedConnection.connect(s.bound_addr)
+        try:
+            rcb = await conn.get_rcb_values(URCB_MMS)
+            rcb.resv = True
+            rcb.rpt_ena = True
+            await conn.set_rcb_values(
+                rcb, RcbWriteMask.fields("resv", "rpt_ena")
+            )
+            sink: queue.Queue = queue.Queue()
+            await conn.install_report_handler(
+                URCB_MMS, lambda r: sink.put(r), rpt_id=URCB_MMS
+            )
+
+            s.update_bool(IND1_SERVER, True)
+            first = await _wait_for_report(conn, sink)
+            assert first is not None, "no report arrived after update_bool"
+            [ind1] = [e for e in first.entries if e.ref == IND1_MMS]
+            assert ind1.reason is not None and ind1.reason.data_change
+
+            s.update_float32(ANIN1_SERVER, 12.5)
+            second = await _wait_for_report(conn, sink)
+            assert second is not None, "no report arrived after update_float32"
+            [ind1] = [e for e in second.entries if e.ref == IND1_MMS]
+            [anin1] = [e for e in second.entries if e.ref == ANIN1_MMS]
+            assert anin1.reason is not None and anin1.reason.data_change
+            assert ind1.reason is not None
+            assert not any(
+                (
+                    ind1.reason.data_change,
+                    ind1.reason.quality_change,
+                    ind1.reason.data_update,
+                    ind1.reason.integrity,
+                    ind1.reason.general_interrogation,
+                )
+            )
+        finally:
+            try:
+                await conn.uninstall_report_handler(URCB_MMS)
+            except Exception:
+                pass
+            await conn.disconnect()
+
+
+async def test_brcb_enabled_by_attribute_writes_delivers_a_report() -> None:
+    """A BRCB enabled one attribute at a time reports to the enabling client.
+
+    `RptEna` is written on its own, as a client that does not use
+    `set_rcb_values` does; the report goes to the association that wrote it.
+    No RptID is passed, so the server defaults it to the MMS path.
     """
     s = IedServer.from_scl_str(SERVER_SCL, ied_name="IED1")
     s.bind("127.0.0.1:0")
@@ -216,9 +273,9 @@ async def test_python_hosted_brcb_fires_on_update_bool() -> None:
     async with s:
         conn = await IedConnection.connect(s.bound_addr)
         try:
-            rcb = await conn.get_rcb_values(BRCB_MMS)
-            rcb.rpt_ena = True
-            await conn.set_rcb_values(rcb, RcbWriteMask.fields("rpt_ena"))
+            await conn.write_bool(BRCB_REF + ".RptEna", FC.BR, True)
+            assert await conn.read_bool(BRCB_REF + ".RptEna", FC.BR) is True
+
             sink: queue.Queue = queue.Queue()
             await conn.install_report_handler(
                 BRCB_MMS, lambda r: sink.put(r), rpt_id=BRCB_MMS
@@ -232,6 +289,55 @@ async def test_python_hosted_brcb_fires_on_update_bool() -> None:
         finally:
             try:
                 await conn.uninstall_report_handler(BRCB_MMS)
+            except Exception:
+                pass
+            await conn.disconnect()
+
+
+async def test_urcb_sends_an_integrity_report_every_intg_pd() -> None:
+    """An enabled RCB with integrity in its TrgOps reports without any change."""
+    s = IedServer.from_scl_str(SERVER_SCL, ied_name="IED1")
+    s.bind("127.0.0.1:0")
+    s.add_dataset("GGIO1$ds1", [IND1_SERVER, ANIN1_SERVER])
+    s.register_urcb(
+        "GenericIO/LLN0.urcb01",
+        dataset="GGIO1$ds1",
+        trg_ops=["integrity"],
+        opt_flds=["seq_num", "reason", "data_set", "data_reference"],
+        buf_tm_ms=10,
+        intg_pd_ms=200,
+    )
+    async with s:
+        conn = await IedConnection.connect(s.bound_addr)
+        try:
+            rcb = await conn.get_rcb_values(URCB_MMS)
+            rcb.resv = True
+            rcb.rpt_ena = True
+            await conn.set_rcb_values(
+                rcb, RcbWriteMask.fields("resv", "rpt_ena")
+            )
+            sink: queue.Queue = queue.Queue()
+            await conn.install_report_handler(
+                URCB_MMS, lambda r: sink.put(r), rpt_id=URCB_MMS
+            )
+
+            reports = []
+            for _ in range(2):
+                report = await _wait_for_report(conn, sink, timeout_s=6.0)
+                assert report is not None, "no integrity report arrived"
+                reports.append(report)
+
+            for report in reports:
+                assert report.rcb_reference == URCB_MMS
+                assert {e.ref for e in report.entries} == {IND1_MMS, ANIN1_MMS}
+                assert all(
+                    e.reason is not None and e.reason.integrity
+                    for e in report.entries
+                )
+            assert reports[1].sequence_number == reports[0].sequence_number + 1
+        finally:
+            try:
+                await conn.uninstall_report_handler(URCB_MMS)
             except Exception:
                 pass
             await conn.disconnect()
