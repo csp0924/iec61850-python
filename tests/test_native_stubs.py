@@ -122,6 +122,32 @@ def test_stub_declares_no_absent_member() -> None:
     assert not absent, f"stub declares members absent from _native: {absent}"
 
 
+def test_stub_declares_every_public_member() -> None:
+    """A member `_native` exports but the stub omits is invisible to a checker.
+
+    Code calling it is flagged as an error although it runs, so a new method
+    or setter has to land in the stub together with the extension.
+    """
+    undeclared: list[str] = []
+    for cls_name, cls in _stub_classes().items():
+        native_cls = getattr(_native, cls_name, None)
+        if native_cls is None or issubclass(native_cls, BaseException):
+            continue
+        declared = {
+            node.name for node in cls.body if isinstance(node, ast.FunctionDef)
+        } | {
+            node.target.id
+            for node in cls.body
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+        }
+        undeclared += [
+            f"{cls_name}.{name}"
+            for name in dir(native_cls)
+            if not name.startswith("_") and name not in declared
+        ]
+    assert not undeclared, f"stub omits members _native exports: {undeclared}"
+
+
 @pytest.mark.parametrize(
     ("cls_name", "method_name"),
     _declared_methods(),
