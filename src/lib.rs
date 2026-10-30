@@ -1158,8 +1158,10 @@ impl PyIedConnection {
     ///
     /// ``bool`` → Boolean, ``int`` → Integer, ``float`` → Float32, ``str`` →
     /// VisibleString, ``bytes`` → OctetString, ``list`` → Array (recursively
-    /// converted with the same rules). For wire-level types that need
-    /// explicit metadata (BitString padding) use the typed write methods.
+    /// converted with the same rules). A ``dict`` is a tagged value, the form
+    /// ``IedServer.from_model_spec`` takes, for a type none of those selects:
+    /// ``{"type": "bit_string", "padding": 6, "data": b"\x80"}`` writes a
+    /// BIT STRING, as ``write_bit_string`` does.
     fn write_object<'py>(
         &self,
         py: Python<'py>,
@@ -1169,7 +1171,7 @@ impl PyIedConnection {
     ) -> PyResult<Bound<'py, PyAny>> {
         let conn = Arc::clone(&self.inner);
         let fc = parse_fc(&fc)?;
-        let mms = py_value_to_mms_value_generic(&value)?;
+        let mms = py_value_to_mms_value_generic(&value, "write value")?;
         future_into_py(py, async move {
             conn.write_object(&reference, fc, mms)
                 .await
@@ -1478,7 +1480,7 @@ impl PyIedConnection {
         let conn = Arc::clone(&self.inner);
         let mut mms_values: Vec<RustMmsValue> = Vec::with_capacity(values.len());
         for v in &values {
-            mms_values.push(py_value_to_mms_value_generic(v)?);
+            mms_values.push(py_value_to_mms_value_generic(v, "write value")?);
         }
         future_into_py(py, async move {
             let outcomes = conn
@@ -1919,8 +1921,11 @@ fn outcome_to_pair(outcome: RustControlOutcome) -> (bool, Option<&'static str>) 
 /// Convert a Python value to a generic ``MmsValue`` for ``write_object``.
 ///
 /// ``bool`` → Boolean, ``float`` → Float32, ``int`` → Integer, ``str`` →
-/// VisibleString, ``bytes`` → OctetString, ``list`` → Array (recursively).
-fn py_value_to_mms_value_generic(value: &Bound<'_, PyAny>) -> PyResult<RustMmsValue> {
+/// VisibleString, ``bytes`` → OctetString, ``list`` → Array (recursively),
+/// and a ``dict`` is read as a tagged value, the form ``from_model_spec``
+/// takes, e.g. ``{"type": "bit_string", "padding": 6, "data": b"\x80"}``.
+/// `what` names the value at the start of every error message.
+fn py_value_to_mms_value_generic(value: &Bound<'_, PyAny>, what: &str) -> PyResult<RustMmsValue> {
     if let Ok(b) = value.extract::<bool>() {
         return Ok(RustMmsValue::Boolean(b));
     }
@@ -1945,19 +1950,23 @@ fn py_value_to_mms_value_generic(value: &Bound<'_, PyAny>) -> PyResult<RustMmsVa
     if let Ok(list) = value.cast::<PyList>() {
         let mut items = Vec::with_capacity(list.len());
         for elem in list.iter() {
-            items.push(py_value_to_mms_value_generic(&elem)?);
+            items.push(py_value_to_mms_value_generic(&elem, what)?);
         }
         return Ok(RustMmsValue::Array(items));
     }
-    Err(PyValueError::new_err(
-        "write value must be bool / int / float / str / bytes / list",
-    ))
+    if let Ok(d) = value.cast::<PyDict>() {
+        return tagged_value_to_mms_value(d, None, what);
+    }
+    Err(PyValueError::new_err(format!(
+        "{what} must be bool / int / float / str / bytes / list, or a tagged dict"
+    )))
 }
 
 /// Convert a Python scalar to the closest ``MmsValue`` for control payloads.
 ///
-/// Supports ``bool`` (SPC), ``int`` (DPC / ENC / INC), and ``float`` (APC).
-/// Other CDC payloads are out of scope for this release.
+/// Supports ``bool`` (SPC), ``int`` (DPC / ENC / INC), ``float`` (APC), and
+/// a tagged ``dict`` as ``from_model_spec`` reads it, for a payload whose
+/// MMS type none of those selects.
 fn py_value_to_mms_value(value: &Bound<'_, PyAny>) -> PyResult<RustMmsValue> {
     // Order matters: `bool` is a subclass of `int` in Python, so this branch
     // must run before the integer fallback. `float` likewise needs an explicit
@@ -1971,8 +1980,11 @@ fn py_value_to_mms_value(value: &Bound<'_, PyAny>) -> PyResult<RustMmsValue> {
     if let Ok(i) = value.extract::<i64>() {
         return Ok(RustMmsValue::Integer(i));
     }
+    if let Ok(d) = value.cast::<PyDict>() {
+        return tagged_value_to_mms_value(d, None, "control value");
+    }
     Err(PyValueError::new_err(
-        "control value must be bool / int / float",
+        "control value must be bool / int / float, or a tagged dict",
     ))
 }
 
@@ -3807,9 +3819,13 @@ impl RustReadHandler for PyReadHandler {
                     if result.is_none() {
                         RustReadOutcome::CacheMiss
                     } else {
-                        match py_value_to_mms_value_generic(&result) {
+                        let what = format!("on_read value for '{}'", self.user_path);
+                        match py_value_to_mms_value_generic(&result, &what) {
                             Ok(v) => RustReadOutcome::CacheHit(v),
-                            Err(_) => RustReadOutcome::Error(RustDataAccessError::TypeInconsistent),
+                            Err(err) => {
+                                err.print(py);
+                                RustReadOutcome::Error(RustDataAccessError::TypeInconsistent)
+                            }
                         }
                     }
                 }
@@ -4913,149 +4929,13 @@ fn parse_mms_value(
     ty: RustDataAttributeType,
     ctx: &str,
 ) -> PyResult<RustMmsValue> {
+    let what = format!("from_model_spec: {ctx}.value");
     let d = val.cast::<PyDict>().map_err(|_| {
         PyValueError::new_err(format!(
-            "from_model_spec: {ctx}.value must be a dict like {{'type': 'bool', 'value': ...}}"
+            "{what} must be a dict like {{'type': 'bool', 'value': ...}}"
         ))
     })?;
-    let kind = get_required_string(d, "type", ctx)?;
-    if kind == "default" {
-        return Ok(RustMmsValue::default_for(ty));
-    }
-    let inner_any = d.get_item("value")?;
-    let inner = inner_any.as_ref();
-    match kind.as_str() {
-        "bool" => Ok(RustMmsValue::Boolean(
-            inner
-                .ok_or_else(|| missing_value(ctx, "bool"))?
-                .extract()
-                .map_err(|_| {
-                    PyValueError::new_err(format!("from_model_spec: {ctx}.value must be a bool"))
-                })?,
-        )),
-        "int" => Ok(RustMmsValue::Integer(
-            inner
-                .ok_or_else(|| missing_value(ctx, "int"))?
-                .extract()
-                .map_err(|_| {
-                    PyValueError::new_err(format!("from_model_spec: {ctx}.value must be an i64"))
-                })?,
-        )),
-        "uint" => Ok(RustMmsValue::Unsigned(
-            inner
-                .ok_or_else(|| missing_value(ctx, "uint"))?
-                .extract()
-                .map_err(|_| {
-                    PyValueError::new_err(format!("from_model_spec: {ctx}.value must be a u64"))
-                })?,
-        )),
-        "float32" => Ok(RustMmsValue::Float32(
-            inner
-                .ok_or_else(|| missing_value(ctx, "float32"))?
-                .extract()
-                .map_err(|_| {
-                    PyValueError::new_err(format!("from_model_spec: {ctx}.value must be a float"))
-                })?,
-        )),
-        "float64" => Ok(RustMmsValue::Float64(
-            inner
-                .ok_or_else(|| missing_value(ctx, "float64"))?
-                .extract()
-                .map_err(|_| {
-                    PyValueError::new_err(format!("from_model_spec: {ctx}.value must be a float"))
-                })?,
-        )),
-        "visible_string" => Ok(RustMmsValue::VisibleString(
-            inner
-                .ok_or_else(|| missing_value(ctx, "visible_string"))?
-                .extract()
-                .map_err(|_| {
-                    PyValueError::new_err(format!("from_model_spec: {ctx}.value must be a string"))
-                })?,
-        )),
-        "mms_string" => Ok(RustMmsValue::MmsString(
-            inner
-                .ok_or_else(|| missing_value(ctx, "mms_string"))?
-                .extract()
-                .map_err(|_| {
-                    PyValueError::new_err(format!("from_model_spec: {ctx}.value must be a string"))
-                })?,
-        )),
-        "octet_string" => Ok(RustMmsValue::OctetString(
-            inner
-                .ok_or_else(|| missing_value(ctx, "octet_string"))?
-                .extract::<Vec<u8>>()
-                .map_err(|_| {
-                    PyValueError::new_err(format!("from_model_spec: {ctx}.value must be bytes"))
-                })?,
-        )),
-        "utc_time" => {
-            let bytes: Vec<u8> = inner
-                .ok_or_else(|| missing_value(ctx, "utc_time"))?
-                .extract()
-                .map_err(|_| {
-                    PyValueError::new_err(format!("from_model_spec: {ctx}.value must be 8 bytes"))
-                })?;
-            if bytes.len() != 8 {
-                return Err(PyValueError::new_err(format!(
-                    "from_model_spec: {ctx}.value for utc_time must be exactly 8 bytes (got {})",
-                    bytes.len()
-                )));
-            }
-            let mut arr = [0u8; 8];
-            arr.copy_from_slice(&bytes);
-            Ok(RustMmsValue::UtcTime(arr))
-        }
-        "binary_time" => {
-            let bytes: Vec<u8> = inner
-                .ok_or_else(|| missing_value(ctx, "binary_time"))?
-                .extract()
-                .map_err(|_| {
-                    PyValueError::new_err(format!(
-                        "from_model_spec: {ctx}.value must be 4 or 6 bytes"
-                    ))
-                })?;
-            if bytes.len() != 4 && bytes.len() != 6 {
-                return Err(PyValueError::new_err(format!(
-                    "from_model_spec: {ctx}.value for binary_time must be 4 or 6 bytes (got {})",
-                    bytes.len()
-                )));
-            }
-            Ok(RustMmsValue::BinaryTime(bytes))
-        }
-        "bit_string" => {
-            let padding = d
-                .get_item("padding")?
-                .ok_or_else(|| {
-                    PyValueError::new_err(format!(
-                        "from_model_spec: {ctx} bit_string requires 'padding' key"
-                    ))
-                })?
-                .extract::<u8>()
-                .map_err(|_| {
-                    PyValueError::new_err(format!(
-                        "from_model_spec: {ctx}.padding must be a u8 (0..=7)"
-                    ))
-                })?;
-            let data: Vec<u8> = d
-                .get_item("data")?
-                .ok_or_else(|| {
-                    PyValueError::new_err(format!(
-                        "from_model_spec: {ctx} bit_string requires 'data' key"
-                    ))
-                })?
-                .extract()
-                .map_err(|_| {
-                    PyValueError::new_err(format!("from_model_spec: {ctx}.data must be bytes"))
-                })?;
-            Ok(RustMmsValue::BitString { padding, data })
-        }
-        other => Err(PyValueError::new_err(format!(
-            "from_model_spec: {ctx}.value type '{other}' is not supported \
-             (allowed: bool, int, uint, float32, float64, visible_string, mms_string, \
-             octet_string, utc_time, binary_time, bit_string, default)"
-        ))),
-    }
+    tagged_value_to_mms_value(d, Some(ty), &what)
 }
 
 const PADDING_RANGE: &str = "an int in 0..=7";
@@ -5072,10 +4952,126 @@ fn bit_string_padding_requirement(data_len: usize, padding: u8) -> Option<&'stat
     }
 }
 
-fn missing_value(ctx: &str, kind: &str) -> PyErr {
-    PyValueError::new_err(format!(
-        "from_model_spec: {ctx} value of type '{kind}' requires a 'value' key"
-    ))
+/// Convert a tagged value dict, ``{"type": <tag>, ...}``, to an ``MmsValue``.
+///
+/// Tags and their keys: ``bool`` / ``int`` / ``uint`` / ``float32`` /
+/// ``float64`` / ``visible_string`` / ``mms_string`` / ``octet_string`` /
+/// ``utc_time`` (8 bytes) / ``binary_time`` (4 or 6 bytes) carry ``value``;
+/// ``bit_string`` carries ``data`` (bytes) and ``padding``, the number of
+/// unused trailing bits in the last octet (0..=7, and 0 when ``data`` is
+/// empty); ``default`` carries nothing and resolves to the zero value of
+/// `default_for`, so it is refused when `default_for` is `None`.
+///
+/// `what` names the dict at the start of every error message.
+fn tagged_value_to_mms_value(
+    d: &Bound<'_, PyDict>,
+    default_for: Option<RustDataAttributeType>,
+    what: &str,
+) -> PyResult<RustMmsValue> {
+    let kind: String = d
+        .get_item("type")?
+        .ok_or_else(|| PyValueError::new_err(format!("{what} is missing the 'type' key")))?
+        .extract()
+        .map_err(|_| PyValueError::new_err(format!("{what}['type'] must be a string")))?;
+    let field = |key: &str| {
+        d.get_item(key)?.ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "{what} of type '{kind}' is missing the '{key}' key"
+            ))
+        })
+    };
+    let invalid = |key: &str, expected: &str| {
+        PyValueError::new_err(format!("{what}['{key}'] must be {expected}"))
+    };
+    match kind.as_str() {
+        "default" => default_for.map(RustMmsValue::default_for).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "{what} of type 'default' needs the attribute type, which only \
+                 from_model_spec knows; give the value explicitly"
+            ))
+        }),
+        "bool" => Ok(RustMmsValue::Boolean(
+            field("value")?
+                .extract()
+                .map_err(|_| invalid("value", "a bool"))?,
+        )),
+        "int" => Ok(RustMmsValue::Integer(
+            field("value")?
+                .extract()
+                .map_err(|_| invalid("value", "an i64"))?,
+        )),
+        "uint" => Ok(RustMmsValue::Unsigned(
+            field("value")?
+                .extract()
+                .map_err(|_| invalid("value", "a u64"))?,
+        )),
+        "float32" => Ok(RustMmsValue::Float32(
+            field("value")?
+                .extract()
+                .map_err(|_| invalid("value", "a float"))?,
+        )),
+        "float64" => Ok(RustMmsValue::Float64(
+            field("value")?
+                .extract()
+                .map_err(|_| invalid("value", "a float"))?,
+        )),
+        "visible_string" => Ok(RustMmsValue::VisibleString(
+            field("value")?
+                .extract()
+                .map_err(|_| invalid("value", "a string"))?,
+        )),
+        "mms_string" => Ok(RustMmsValue::MmsString(
+            field("value")?
+                .extract()
+                .map_err(|_| invalid("value", "a string"))?,
+        )),
+        "octet_string" => Ok(RustMmsValue::OctetString(
+            field("value")?
+                .extract::<Vec<u8>>()
+                .map_err(|_| invalid("value", "bytes"))?,
+        )),
+        "utc_time" => {
+            let bytes: Vec<u8> = field("value")?
+                .extract()
+                .map_err(|_| invalid("value", "8 bytes"))?;
+            let arr: [u8; 8] = bytes.as_slice().try_into().map_err(|_| {
+                PyValueError::new_err(format!(
+                    "{what}['value'] for utc_time must be exactly 8 bytes (got {})",
+                    bytes.len()
+                ))
+            })?;
+            Ok(RustMmsValue::UtcTime(arr))
+        }
+        "binary_time" => {
+            let bytes: Vec<u8> = field("value")?
+                .extract()
+                .map_err(|_| invalid("value", "4 or 6 bytes"))?;
+            if bytes.len() != 4 && bytes.len() != 6 {
+                return Err(PyValueError::new_err(format!(
+                    "{what}['value'] for binary_time must be 4 or 6 bytes (got {})",
+                    bytes.len()
+                )));
+            }
+            Ok(RustMmsValue::BinaryTime(bytes))
+        }
+        "bit_string" => {
+            let padding: u8 = field("padding")?
+                .extract()
+                .map_err(|_| invalid("padding", PADDING_RANGE))?;
+            let data: Vec<u8> = field("data")?
+                .extract()
+                .map_err(|_| invalid("data", "bytes"))?;
+            if let Some(required) = bit_string_padding_requirement(data.len(), padding) {
+                return Err(invalid("padding", required));
+            }
+            Ok(RustMmsValue::BitString { padding, data })
+        }
+        other => Err(PyValueError::new_err(format!(
+            "{what} has type '{other}', which is not supported \
+             (allowed: bool, int, uint, float32, float64, visible_string, mms_string, \
+             octet_string, utc_time, binary_time, bit_string, default)"
+        ))),
+    }
 }
 
 fn parse_model_trg_ops(items: &[String], ctx: &str) -> PyResult<RustModelTrgOps> {
@@ -5637,8 +5633,12 @@ impl PyIedServer {
     /// The callback receives the address string and returns:
     ///
     /// - any supported scalar value (``bool`` / ``int`` / ``float`` /
-    ///   ``str`` / ``bytes`` / ``list``) — used as the read result, the
-    ///   server skips its cached value;
+    ///   ``str`` / ``bytes`` / ``list``), or a tagged ``dict`` in the form
+    ///   ``from_model_spec`` takes (``{"type": "bit_string", "padding": 6,
+    ///   "data": b"\x80"}`` for a ``Dbpos`` in the on state) —
+    ///   used as the read result, the server skips its cached value. A value
+    ///   that cannot be converted is printed through the standard hook and
+    ///   the read fails with ``TypeInconsistent``;
     /// - ``None`` — fall through to the server's cached value;
     /// - raises an exception — read fails. Set ``code`` on the exception
     ///   (e.g. ``"HardwareFault"``) to control the reported
@@ -6229,7 +6229,7 @@ impl PyIedServer {
         let (domain, item) = mms_path.split_once('/').ok_or_else(|| {
             PyValueError::new_err(format!("log_value: malformed mms_path '{mms_path}'"))
         })?;
-        let mms_value = py_value_to_mms_value_generic(&value)?;
+        let mms_value = py_value_to_mms_value_generic(&value, "log_value: value")?;
         let state = self.state.lock().unwrap();
         let server = match &*state {
             ServerState::Running { server, .. } => Arc::clone(server),

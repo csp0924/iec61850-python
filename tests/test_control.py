@@ -30,6 +30,23 @@ async def test_direct_normal_operate_success() -> None:
             await conn.disconnect()
 
 
+async def test_operate_accepts_a_tagged_value() -> None:
+    async with _demo.hosted_control("direct-normal") as server:
+        conn = await iec61850.IedConnection.connect(server.bound_addr)
+        try:
+            spc = conn.create_control_object(
+                _demo.SWITCH, iec61850.ControlModel.DIRECT_NORMAL
+            )
+            outcome = await spc.operate({"type": "bool", "value": True})
+            assert outcome.success is True
+            stval = await conn.read_bool(f"{_demo.SWITCH}.stVal", iec61850.FC.ST)
+            assert stval is True
+            with pytest.raises(ValueError, match="control value is missing the 'type' key"):
+                await spc.operate({"value": True})
+        finally:
+            await conn.disconnect()
+
+
 async def test_direct_enhanced_operate_success_with_ct() -> None:
     """Operate on a direct-enhanced SPC drives Write Oper plus CommandTermination+."""
     async with _demo.hosted_control("direct-enhanced") as server:

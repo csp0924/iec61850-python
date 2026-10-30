@@ -360,7 +360,8 @@ class ControlObjectClient:
 
     Construct via :py:meth:`IedConnection.create_control_object`. The control
     payload type follows the underlying CDC: ``bool`` for SPC, ``int`` for
-    DPC / INC / ENC, ``float`` for APC.
+    DPC / INC / ENC, ``float`` for APC. A tagged ``dict``, the form ``write``
+    takes, sends any other MMS type.
     """
 
     __slots__ = ("_native",)
@@ -628,8 +629,11 @@ class IedConnection:
         """Write a value to an object.
 
         Accepts ``bool``, ``int``, ``float``, ``str``, ``bytes``, or a ``list``
-        of the same. ``array_index`` and ``component`` select an array element
-        or sub-component, with the same semantics as ``read``.
+        of the same. A ``dict`` is a tagged value in the form
+        ``IedServer.from_model_spec`` takes, for a type none of those selects:
+        ``{"type": "bit_string", "padding": 6, "data": b"\\x80"}`` writes a
+        ``BIT_STRING``. ``array_index`` and ``component`` select an array
+        element or sub-component, with the same semantics as ``read``.
         """
         target = _compose_reference(ref, array_index, component)
         await self._native_conn.write_object(target, fc, value)

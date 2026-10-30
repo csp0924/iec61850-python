@@ -49,7 +49,8 @@ Rust crate.
 - Typed scalar read / write: `bool`, `int32`, `int64`, `uint32`, `float`,
   `float64`, `string`, `timestamp` (decoded to `datetime`), `quality`
   (decoded to a `Quality` dataclass), and `bit_string` as `(data, padding)`
-- Generic `read` / `write` with array-element and sub-component selection
+- Generic `read` / `write` with array-element and sub-component selection;
+  `write` also takes a tagged value dict for types no Python type selects
 - Directory queries: `get_server_directory`, `get_logical_device_directory`,
   `get_logical_node_directory(AcsiClass)`, `get_data_directory`
 - Schema introspection: `get_variable_specification(ref, fc)` (recursive MMS
@@ -546,6 +547,24 @@ await conn.write(
 )
 ```
 
+A value no Python type selects is written as a tagged dict, the form
+`IedServer.from_model_spec` takes. A BIT STRING carries its octets first bit
+first, in the most significant bit of the first octet, and the number of
+unused trailing bits in the last octet:
+
+```python
+# Dbpos "on" (binary 10): one octet, six unused trailing bits.
+await conn.write(
+    "LD/XCBR1.PosSet.setVal",
+    iec61850.FC.SP,
+    {"type": "bit_string", "padding": 6, "data": b"\x80"},
+)
+
+# The typed pair does the same and keeps the padding on the way back.
+await conn.write_bit_string("LD/XCBR1.PosSet.setVal", iec61850.FC.SP, b"\x80", 6)
+data, padding = await conn.read_bit_string("LD/XCBR1.Pos.stVal", iec61850.FC.ST)
+```
+
 Array elements and sub-components are addressed with keyword arguments:
 
 ```python
@@ -967,11 +986,18 @@ server.on_write("GenericIO/GGIO1.SetPt1.setVal", validate_setpoint)
 
 `on_read` return values:
 
-| Return     | Behavior                            |
-|------------|--------------------------------------|
-| any scalar | the value is returned to the client  |
-| `None`     | fall through to the cached value     |
-| raises     | read fails with `IedDataAccessError` |
+| Return      | Behavior                             |
+|-------------|--------------------------------------|
+| any scalar  | the value is returned to the client  |
+| tagged dict | the value is returned to the client  |
+| `None`      | fall through to the cached value     |
+| raises      | read fails with `IedDataAccessError` |
+
+A tagged dict takes the form `from_model_spec` accepts for `value`, so a
+callback can serve a BIT STRING such as `Dbpos`:
+`{"type": "bit_string", "padding": 6, "data": b"\x80"}` reads as the on
+state. A dict that does not convert fails the read with `TypeInconsistent`
+and prints the reason through the standard exception hook.
 
 `on_write` return values:
 
