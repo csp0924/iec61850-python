@@ -554,6 +554,15 @@ class IedConnection:
         bits: int = await self._native_conn.read_quality_bits(ref, fc)
         return _decode_quality_bits(bits)
 
+    async def read_bit_string(self, ref: str, fc: FC) -> tuple[bytes, int]:
+        """Read a ``BIT_STRING`` attribute as ``(data, padding)``.
+
+        ``data`` holds the bits first bit first, in the most significant bit
+        of the first octet; ``padding`` is the number of unused trailing bits
+        in the last octet. A ``Dbpos`` in the on state reads ``(b"\\x80", 6)``.
+        """
+        return await self._native_conn.read_bit_string(ref, fc)
+
     # ─── typed write ──────────────────────────────────────────────────────
     async def write_bool(self, ref: str, fc: FC, value: bool) -> None:
         await self._native_conn.write_bool(ref, fc, value)
@@ -572,6 +581,17 @@ class IedConnection:
 
     async def write_visible_string(self, ref: str, fc: FC, value: str) -> None:
         await self._native_conn.write_visible_string(ref, fc, value)
+
+    async def write_bit_string(
+        self, ref: str, fc: FC, data: bytes, padding: int
+    ) -> None:
+        """Write a ``BIT_STRING`` attribute.
+
+        ``data`` and ``padding`` take the layout ``read_bit_string`` returns;
+        ``padding`` must be 0..7, and 0 when ``data`` is empty, or
+        ``ValueError`` is raised before anything is sent.
+        """
+        await self._native_conn.write_bit_string(ref, fc, data, padding)
 
     # ─── generic (composite types + alternate access) ─────────────────────
     async def read(

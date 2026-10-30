@@ -48,7 +48,7 @@ Rust crate.
   an `IedConnection` plus an optional background `ReportDispatcher`
 - Typed scalar read / write: `bool`, `int32`, `int64`, `uint32`, `float`,
   `float64`, `string`, `timestamp` (decoded to `datetime`), `quality`
-  (decoded to a `Quality` dataclass)
+  (decoded to a `Quality` dataclass), and `bit_string` as `(data, padding)`
 - Generic `read` / `write` with array-element and sub-component selection
 - Directory queries: `get_server_directory`, `get_logical_device_directory`,
   `get_logical_node_directory(AcsiClass)`, `get_data_directory`

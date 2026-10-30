@@ -956,6 +956,39 @@ impl PyIedConnection {
         })
     }
 
+    /// Read a `BIT_STRING` DA, returning ``(data, padding)``: the octets as
+    /// sent, first bit in the most significant bit of the first octet, and
+    /// the number of unused trailing bits in the last octet. A ``Dbpos`` in
+    /// the on state reads ``(b"\x80", 6)``. Raises `IedDataAccessError` when
+    /// the attribute is not a bit string.
+    fn read_bit_string<'py>(
+        &self,
+        py: Python<'py>,
+        reference: String,
+        fc: String,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let conn = Arc::clone(&self.inner);
+        let fc = parse_fc(&fc)?;
+        future_into_py(py, async move {
+            let value = conn
+                .read_object(&reference, fc)
+                .await
+                .map_err(|e| map_client_error(e, ErrCtx::Service))?;
+            match value {
+                RustMmsValue::BitString { padding, data } => {
+                    Python::attach(|py| Ok((PyBytes::new(py, &data).unbind(), padding)))
+                }
+                other => Err(map_client_error(
+                    ClientError::UnexpectedValueType {
+                        expected: "BitString",
+                        got: mms_variant_name(&other),
+                    },
+                    ErrCtx::Service,
+                )),
+            }
+        })
+    }
+
     /// Write a `BOOLEAN` DA.
     fn write_bool<'py>(
         &self,
@@ -1058,6 +1091,38 @@ impl PyIedConnection {
         let fc = parse_fc(&fc)?;
         future_into_py(py, async move {
             conn.write_visible_string(&reference, fc, value)
+                .await
+                .map_err(|e| map_client_error(e, ErrCtx::Service))?;
+            Ok(())
+        })
+    }
+
+    /// Write a `BIT_STRING` DA.
+    ///
+    /// `data` carries the bits first bit first, in the most significant bit
+    /// of the first octet; `padding` is the number of unused trailing bits in
+    /// the last octet, 0..=7, and 0 when `data` is empty. A ``Dbpos`` set to
+    /// the on state is ``write_bit_string(ref, fc, b"\x80", 6)``. An invalid
+    /// `padding` raises `ValueError` before anything is sent.
+    fn write_bit_string<'py>(
+        &self,
+        py: Python<'py>,
+        reference: String,
+        fc: String,
+        data: Vec<u8>,
+        padding: Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let conn = Arc::clone(&self.inner);
+        let fc = parse_fc(&fc)?;
+        let invalid = |required: &str| {
+            PyValueError::new_err(format!("write_bit_string: padding must be {required}"))
+        };
+        let padding: u8 = padding.extract().map_err(|_| invalid(PADDING_RANGE))?;
+        if let Some(required) = bit_string_padding_requirement(data.len(), padding) {
+            return Err(invalid(required));
+        }
+        future_into_py(py, async move {
+            conn.write_object(&reference, fc, RustMmsValue::BitString { padding, data })
                 .await
                 .map_err(|e| map_client_error(e, ErrCtx::Service))?;
             Ok(())
@@ -2199,6 +2264,25 @@ fn device_model_to_pydict<'py>(
 }
 
 // ── MmsValue → Python ────────────────────────────────────────────────────────
+
+/// Names the variant of an `MmsValue` the way the client's typed reads do.
+fn mms_variant_name(v: &RustMmsValue) -> &'static str {
+    match v {
+        RustMmsValue::Boolean(_) => "Boolean",
+        RustMmsValue::Integer(_) => "Integer",
+        RustMmsValue::Unsigned(_) => "Unsigned",
+        RustMmsValue::Float32(_) => "Float32",
+        RustMmsValue::Float64(_) => "Float64",
+        RustMmsValue::BitString { .. } => "BitString",
+        RustMmsValue::OctetString(_) => "OctetString",
+        RustMmsValue::VisibleString(_) => "VisibleString",
+        RustMmsValue::MmsString(_) => "MmsString",
+        RustMmsValue::UtcTime(_) => "UtcTime",
+        RustMmsValue::BinaryTime(_) => "BinaryTime",
+        RustMmsValue::Array(_) => "Array",
+        RustMmsValue::Structure(_) => "Structure",
+    }
+}
 
 /// Convert one MmsValue to its closest native Python representation.
 ///
@@ -4971,6 +5055,20 @@ fn parse_mms_value(
              (allowed: bool, int, uint, float32, float64, visible_string, mms_string, \
              octet_string, utc_time, binary_time, bit_string, default)"
         ))),
+    }
+}
+
+const PADDING_RANGE: &str = "an int in 0..=7";
+
+/// Returns what `padding` must be when it is not a valid count of unused
+/// trailing bits for a BIT STRING of `data_len` octets, or `None` when it is.
+fn bit_string_padding_requirement(data_len: usize, padding: u8) -> Option<&'static str> {
+    if padding > 7 {
+        Some(PADDING_RANGE)
+    } else if data_len == 0 && padding != 0 {
+        Some("0 when the data is empty")
+    } else {
+        None
     }
 }
 
