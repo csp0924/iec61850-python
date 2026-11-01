@@ -31,12 +31,20 @@ import iec61850
 
 
 def resolve(target: str) -> str:
-    """Turn `host[:port]` into the numeric `address:port` the query needs."""
+    """Turn `host[:port]` into the numeric `address:port` the query needs.
+
+    An IPv6 literal is written in brackets, `[2001:db8::1]:123`, on the way in
+    and on the way out.
+    """
     host, _, port = target.rpartition(":")
     if not host:
         host, port = target, "123"
-    info = socket.getaddrinfo(host, int(port), type=socket.SOCK_DGRAM)
-    address, resolved_port = info[0][4][:2]
+    family, _, _, _, sockaddr = socket.getaddrinfo(
+        host.strip("[]"), int(port), type=socket.SOCK_DGRAM
+    )[0]
+    address, resolved_port = sockaddr[:2]
+    if family == socket.AF_INET6:
+        return f"[{address}]:{resolved_port}"
     return f"{address}:{resolved_port}"
 
 
