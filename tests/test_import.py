@@ -24,6 +24,7 @@ def test_public_surface_complete() -> None:
         "DataSetMember", "FC", "Iec61850Client", "Iec61850ClientConfig",
         "IedConnection", "IedConnectionError", "IedControlError",
         "IedDataAccessError", "IedError", "IedServiceError", "IedTimeoutError",
+        "IedTlsError",
         "InclusionReason", "MmsValue", "OriginValue", "Quality", "QualityDetail",
         "RcbHandle", "RcbWriteMask", "ReportDispatcher", "ReportEntry",
         "ReportOptFlds", "SboClass", "TlsConfig", "TriggerOptions", "TypeSpec",
@@ -39,6 +40,7 @@ def test_exception_hierarchy() -> None:
     assert issubclass(iec61850.IedDataAccessError, iec61850.IedError)
     assert issubclass(iec61850.IedServiceError, iec61850.IedError)
     assert issubclass(iec61850.IedControlError, iec61850.IedError)
+    assert issubclass(iec61850.IedTlsError, iec61850.IedConnectionError)
 
 
 def test_enum_values() -> None:

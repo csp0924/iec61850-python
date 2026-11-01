@@ -46,8 +46,10 @@ async def test_create_duplicate_data_set_raises(demo_server: str) -> None:
     try:
         await conn.create_data_set(DS_DUP, _members())
         try:
-            with pytest.raises(iec61850.IedServiceError):
+            with pytest.raises(iec61850.IedServiceError) as info:
                 await conn.create_data_set(DS_DUP, _members())
+            assert info.value.error_class == 2  # definition
+            assert info.value.code == 5  # object-exists
         finally:
             await conn.delete_data_set(DS_DUP)
     finally:
@@ -116,8 +118,11 @@ async def test_array_index_member_rejected_by_server(demo_server: str) -> None:
                 array_index=0,
             ),
         ]
-        with pytest.raises(iec61850.IedServiceError):
+        with pytest.raises(iec61850.IedServiceError) as info:
             await conn.create_data_set(f"{_demo.DOMAIN}/LLN0.ds_arr", members)
+        assert info.value.reason == "service-error"
+        assert info.value.error_class == 2  # definition
+        assert info.value.code == 1  # object-undefined
     finally:
         await conn.disconnect()
 

@@ -25,7 +25,19 @@ class IedError(Exception):
     """Base error for the iec61850 package."""
 
 class IedConnectionError(IedError):
-    """TCP / OSI stack connection failure."""
+    """TCP / OSI stack connection failure.
+
+    ``reason`` names the failure when the stack reports one:
+    ``"connection-lost"``, ``"released-by-peer"``, ``"transport"`` (with the
+    transport's ``kind`` and ``detail``), ``"associate-failed"`` or
+    ``"initiate-failed"`` (with the Initiate-ErrorPDU subcode as ``code``).
+    Attributes that do not apply are ``None``.
+    """
+
+    reason: str | None
+    kind: str | None
+    detail: str | None
+    code: int | None
 
 class IedSessionRefusedError(IedConnectionError):
     """Peer answered the connect request with a session REFUSE SPDU.
@@ -39,20 +51,66 @@ class IedSessionRefusedError(IedConnectionError):
     transport_disconnect: int | None
     provider_reason: int | None
 
+class IedTlsError(IedConnectionError):
+    """TLS handshake failed while the connection was being established.
+
+    ``kind`` is one of ``"verification"``, ``"alert_received"``,
+    ``"version_unsupported"``, ``"cipher_unsupported"``, ``"timeout"``,
+    ``"io"`` or ``"other"``; ``message`` is the text of the TLS error.
+    """
+
+    kind: str | None
+    message: str | None
+
 class IedTimeoutError(IedError):
-    """Operation exceeded its deadline."""
+    """Operation exceeded its deadline.
+
+    ``timeout_ms`` is the deadline that elapsed, when the stack reports it.
+    """
+
+    timeout_ms: int | None
 
 class IedDataAccessError(IedError):
-    """Server returned a DataAccess service error."""
+    """Server returned a DataAccess service error.
+
+    ``code`` is the DataAccessError value, when the server reported one.
+    """
+
+    code: int | None
 
 class IedServiceError(IedError):
-    """Other MMS service-level failure."""
+    """Other MMS service-level failure.
+
+    ``reason`` names the failure: ``"service-error"`` (a Confirmed-ErrorPDU,
+    with ``error_class`` the errorClass alternative, ``code`` its subcode and
+    ``number_deleted`` the count a refused DeleteDataSet still deleted),
+    ``"reject"`` (with ``reject_type`` and the rejectReason as ``code``),
+    ``"conclude-rejected"``, ``"outstanding-limit"``, ``"pdu-too-large"``
+    (with ``pdu_size`` and ``max_size``), ``"name-list-limit"`` (with
+    ``limit``), ``"name-list-not-advancing"`` or ``"journal-not-advancing"``.
+    Attributes that do not apply are ``None``.
+    """
+
+    reason: str | None
+    error_class: int | None
+    code: int | None
+    reject_type: int | None
+    number_deleted: int | None
+    pdu_size: int | None
+    max_size: int | None
+    limit: int | None
 
 class IedControlError(IedError):
     """Control object Select / Operate / Cancel failure."""
 
 class IedServerError(IedError):
-    """Server-side bind, lifecycle, or model error."""
+    """Server-side bind, lifecycle, or model error.
+
+    ``reference`` names the object a refused duplicate registration
+    addressed, else ``None``.
+    """
+
+    reference: str | None
 
 class SclError(IedError):
     """SCL / ICD / CID parse / resolve failure."""

@@ -157,15 +157,114 @@ create_exception!(
     "Failure starting, configuring, or running a hosted IED server."
 );
 
+create_exception!(
+    _native,
+    IedTlsError,
+    IedConnectionError,
+    "TLS handshake failed while the connection was being established."
+);
+
 /// Context for mapping `ClientError` → Python exception.
 ///
-/// While connecting, every failure other than a session refusal surfaces as
-/// `IedConnectionError`: an MMS service error is a misleading classification
-/// before the association exists.
+/// While connecting, every failure that is neither a timeout, a failed TLS
+/// handshake nor a session refusal surfaces as `IedConnectionError`: an MMS
+/// service error is a misleading classification before the association
+/// exists.
 #[derive(Copy, Clone)]
 enum ErrCtx {
     Connect,
     Service,
+}
+
+/// Attribute names each exception class carries, with ``None`` as the class
+/// default so an instance that does not set one still answers it.
+const EXCEPTION_ATTRIBUTES: [(&str, &[&str]); 6] = [
+    ("IedConnectionError", &["reason", "kind", "detail", "code"]),
+    ("IedTlsError", &["kind", "message"]),
+    ("IedTimeoutError", &["timeout_ms"]),
+    (
+        "IedServiceError",
+        &[
+            "reason",
+            "error_class",
+            "code",
+            "reject_type",
+            "number_deleted",
+            "pdu_size",
+            "max_size",
+            "limit",
+        ],
+    ),
+    ("IedDataAccessError", &["code"]),
+    ("IedServerError", &["reference"]),
+];
+
+/// Sets attributes on the instance `err` carries and returns it.
+///
+/// Attaching is best effort: should setting one fail, the exception is
+/// returned without the remaining attributes rather than replaced.
+fn with_attrs<'a>(
+    err: PyErr,
+    attrs: impl IntoIterator<Item = (&'a str, Option<AttrValue>)>,
+) -> PyErr {
+    Python::attach(|py| -> PyResult<()> {
+        let value = err.value(py);
+        for (name, attr) in attrs {
+            match attr {
+                Some(AttrValue::Int(n)) => value.setattr(name, n)?,
+                Some(AttrValue::Str(s)) => value.setattr(name, s)?,
+                None => value.setattr(name, py.None())?,
+            }
+        }
+        Ok(())
+    })
+    .err()
+    .unwrap_or(err)
+}
+
+/// Value of one exception attribute.
+enum AttrValue {
+    Int(i64),
+    Str(String),
+}
+
+fn int_attr(n: impl Into<i64>) -> Option<AttrValue> {
+    Some(AttrValue::Int(n.into()))
+}
+
+fn str_attr(s: impl Into<String>) -> Option<AttrValue> {
+    Some(AttrValue::Str(s.into()))
+}
+
+/// Python token for a TLS handshake failure kind; unknown kinds read
+/// ``"other"``.
+fn tls_failure_kind_token(kind: iec61850_client::TlsFailureKind) -> &'static str {
+    use iec61850_client::TlsFailureKind as K;
+    match kind {
+        K::Verification => "verification",
+        K::AlertReceived => "alert_received",
+        K::VersionUnsupported => "version_unsupported",
+        K::CipherUnsupported => "cipher_unsupported",
+        K::Timeout => "timeout",
+        K::Io => "io",
+        _ => "other",
+    }
+}
+
+/// rejectReason value a RejectPDU carries; the NULL-bodied types read 0.
+fn reject_reason_value(reason: &iec61850_client::RejectReason) -> u8 {
+    use iec61850_client::RejectReason as R;
+    match reason {
+        R::ConfirmedRequest(r) => r.clone() as u8,
+        R::ConfirmedResponse(r) => r.clone() as u8,
+        R::ConfirmedError(r) => r.clone() as u8,
+        R::UnconfirmedPdu(r) => r.clone() as u8,
+        R::PduError(r) => r.clone() as u8,
+        R::ConcludeRequest(r) => r.clone() as u8,
+        R::ConcludeResponse(r) => r.clone() as u8,
+        R::ConcludeError(r) => r.clone() as u8,
+        _ => 0,
+    }
 }
 
 /// Builds the exception a session REFUSE SPDU surfaces as.
@@ -206,17 +305,140 @@ fn map_client_error(err: ClientError, ctx: ErrCtx) -> PyErr {
             },
             _,
         ) => session_refused_error(message, reason_code, transport_disconnect, provider_reason),
+        (
+            ClientError::TlsHandshake {
+                kind, message: tls, ..
+            },
+            _,
+        ) => with_attrs(
+            IedTlsError::new_err(message),
+            [
+                ("kind", str_attr(tls_failure_kind_token(kind))),
+                ("message", str_attr(tls)),
+            ],
+        ),
+        (ClientError::Timeout { after_ms, .. }, _)
+        | (ClientError::ConnectTimeout { after_ms, .. }, _)
+        | (ClientError::CommandTerminationTimeout { after_ms, .. }, _) => with_attrs(
+            IedTimeoutError::new_err(message),
+            [("timeout_ms", int_attr(after_ms as i64))],
+        ),
+        (ClientError::ConnectionLost, _) => with_attrs(
+            IedConnectionError::new_err(message),
+            [("reason", str_attr("connection-lost"))],
+        ),
+        (ClientError::ReleasedByPeer, _) => with_attrs(
+            IedConnectionError::new_err(message),
+            [("reason", str_attr("released-by-peer"))],
+        ),
+        (ClientError::Transport(cause), _) => with_attrs(
+            IedConnectionError::new_err(message),
+            [
+                ("reason", str_attr("transport")),
+                ("kind", str_attr(cause.kind().as_str())),
+                (
+                    "detail",
+                    cause.detail().map(|d| AttrValue::Str(d.to_owned())),
+                ),
+            ],
+        ),
+        (ClientError::AssociateFailed, _) => with_attrs(
+            IedConnectionError::new_err(message),
+            [("reason", str_attr("associate-failed"))],
+        ),
+        (ClientError::InitiateFailed { error_code, .. }, _) => with_attrs(
+            IedConnectionError::new_err(message),
+            [
+                ("reason", str_attr("initiate-failed")),
+                ("code", int_attr(error_code)),
+            ],
+        ),
         (_, ErrCtx::Connect) => IedConnectionError::new_err(message),
+        (
+            ClientError::Service {
+                error_class,
+                service_specific,
+                ..
+            },
+            _,
+        ) => {
+            let number_deleted = match service_specific {
+                Some(iec61850_client::ServiceSpecificInfo::DeleteNamedVariableList(n)) => {
+                    int_attr(n)
+                }
+                _ => None,
+            };
+            with_attrs(
+                IedServiceError::new_err(message),
+                [
+                    ("reason", str_attr("service-error")),
+                    ("error_class", int_attr(error_class.context_tag())),
+                    ("code", int_attr(error_class.code())),
+                    ("number_deleted", number_deleted),
+                ],
+            )
+        }
+        (ClientError::Reject { reason, .. }, _) => with_attrs(
+            IedServiceError::new_err(message),
+            [
+                ("reason", str_attr("reject")),
+                ("reject_type", int_attr(reason.reject_type())),
+                ("code", int_attr(reject_reason_value(&reason))),
+            ],
+        ),
+        (ClientError::ConcludeRejected, _) => with_attrs(
+            IedServiceError::new_err(message),
+            [
+                ("reason", str_attr("conclude-rejected")),
+                ("error_class", int_attr(9u8)),
+            ],
+        ),
+        (ClientError::OutstandingCallLimit, _) => with_attrs(
+            IedServiceError::new_err(message),
+            [("reason", str_attr("outstanding-limit"))],
+        ),
+        (
+            ClientError::PduTooLarge {
+                pdu_size, max_size, ..
+            },
+            _,
+        ) => with_attrs(
+            IedServiceError::new_err(message),
+            [
+                ("reason", str_attr("pdu-too-large")),
+                ("pdu_size", int_attr(pdu_size as i64)),
+                ("max_size", int_attr(max_size as i64)),
+            ],
+        ),
+        (ClientError::NameListLimit { limit, .. }, _) => with_attrs(
+            IedServiceError::new_err(message),
+            [
+                ("reason", str_attr("name-list-limit")),
+                ("limit", int_attr(limit as i64)),
+            ],
+        ),
+        (ClientError::NameListNotAdvancing, _) => with_attrs(
+            IedServiceError::new_err(message),
+            [("reason", str_attr("name-list-not-advancing"))],
+        ),
+        (ClientError::JournalNotAdvancing, _) => with_attrs(
+            IedServiceError::new_err(message),
+            [("reason", str_attr("journal-not-advancing"))],
+        ),
+        (ClientError::DataAccessError(d), _) => with_attrs(
+            IedDataAccessError::new_err(message),
+            [("code", int_attr(d.code()))],
+        ),
         (ClientError::TypeMismatch { .. }, _)
         | (ClientError::UnexpectedValueType { .. }, _)
         | (ClientError::InvalidBinaryTimeLen { .. }, _)
-        | (ClientError::ParseFailed(_), _)
-        | (ClientError::DataAccessError(_), _) => IedDataAccessError::new_err(message),
+        | (ClientError::ParseFailed(_), _) => IedDataAccessError::new_err(message),
         (ClientError::InvalidArgument(_), _)
         | (ClientError::InvalidRptId { .. }, _)
         | (ClientError::AlreadyRegistered(_), _)
         | (ClientError::NotFound(_), _) => PyValueError::new_err(message),
-        (_, _) => IedServiceError::new_err(message),
+        (ClientError::Mms(_), _) => IedServiceError::new_err(message),
+        (_, _) => IedError::new_err(message),
     }
 }
 
@@ -3220,6 +3442,13 @@ fn map_server_error(err: RustServerError) -> PyErr {
         SE::AlreadyLocked => PyRuntimeError::new_err(msg),
         SE::TypeMismatch { .. } => IedDataAccessError::new_err(msg),
         SE::InvalidCtlModel { .. } => IedDataAccessError::new_err(msg),
+        SE::AlreadyRegistered { reference, .. } => {
+            let err = IedServerError::new_err(msg);
+            Python::attach(|py| {
+                let _ = err.value(py).setattr("reference", reference);
+            });
+            err
+        }
         _ => IedServerError::new_err(msg),
     }
 }
@@ -6570,6 +6799,13 @@ fn _native(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("IedControlError", py.get_type::<IedControlError>())?;
     m.add("SclError", py.get_type::<SclError>())?;
     m.add("IedServerError", py.get_type::<IedServerError>())?;
+    m.add("IedTlsError", py.get_type::<IedTlsError>())?;
+    for (class, attrs) in EXCEPTION_ATTRIBUTES {
+        let ty = m.getattr(class)?;
+        for attr in attrs {
+            ty.setattr(*attr, py.None())?;
+        }
+    }
 
     m.add_class::<PyIedConnection>()?;
     m.add_class::<PyRcbHandle>()?;
