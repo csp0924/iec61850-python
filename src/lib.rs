@@ -2720,7 +2720,8 @@ fn py_value_to_mms_value_shaped(
 
 /// Convert a Python scalar to the closest ``MmsValue`` for control payloads.
 ///
-/// Supports ``bool`` (SPC), ``int`` (DPC / ENC / INC), ``float`` (APC), and
+/// Supports ``bool`` (SPC / DPC), ``int`` (INC / ENC / ISC), ``float``
+/// (a single FLOAT32), and
 /// a tagged ``dict`` as ``from_model_spec`` reads it, for a payload whose
 /// MMS type none of those selects.
 fn py_value_to_mms_value(value: &Bound<'_, PyAny>) -> PyResult<RustMmsValue> {
@@ -4015,7 +4016,7 @@ struct PendingBrcb {
     opt_flds: RustServerOptFlds,
     buf_tm_ms: u32,
     intg_pd_ms: u32,
-    /// Buffer capacity (entry count, IEC 61850-7-2 §15 IC-2).
+    /// Buffer capacity (entry count).
     buffer_capacity: usize,
     /// Edition 2+ — expose ResvTms MMS field.
     with_resv_tms: bool,
@@ -6351,9 +6352,16 @@ impl PyIedServer {
     ///       ],
     ///     }
     ///
-    /// **DA `type`** is the spelling from IEC 61850-7-3 (``"Boolean"``,
-    /// ``"Int32"``, ``"Float32"``, ``"Enumerated"``, ``"Timestamp"``,
-    /// ``"Quality"``, …). Sized variants accept an object form
+    /// **DA `type`** is a `DataAttributeType` token: ``"Boolean"``,
+    /// ``"Int8"`` … ``"Int128"``, ``"Int8U"`` … ``"Int32U"``,
+    /// ``"Float32"``, ``"Float64"``, ``"Enumerated"``, ``"CodedEnum"``,
+    /// ``"VisibleString"``, ``"OctetString"``, ``"UnicodeString255"``,
+    /// ``"GenericBitString"``, ``"Quality"``, ``"Check"``, ``"OptFlds"``,
+    /// ``"TrgOpsBits"``, ``"SvOptFlds"``, ``"LogOptFlds"``,
+    /// ``"Timestamp"``, ``"EntryTime"``, ``"PhyComAddr"``, ``"Currency"``,
+    /// ``"Constructed"``. SCL bType names (``"Dbpos"``, ``"VisString64"``,
+    /// …) are not tokens. ``VisibleString``, ``OctetString`` and
+    /// ``GenericBitString`` take a maximum length through the object form
     /// ``{"type": "OctetString", "max_len": 64}``.
     ///
     /// **DA `value`** is a tagged dict: ``{"type": "int", "value": 1}``,
@@ -6416,8 +6424,11 @@ impl PyIedServer {
     ///
     /// `min_tls_version` / `max_tls_version` accept ``"tls1.2"`` or
     /// ``"tls1.3"`` (defaults: tls1.2-tls1.3). The cipher suites are fixed
-    /// to the IEC 62351-3 whitelist: ECDHE-RSA and ECDHE-ECDSA with AES-GCM
-    /// for TLS 1.2, and TLS_AES_128_GCM_SHA256 and TLS_AES_256_GCM_SHA384 for
+    /// to IEC 62351-3: ``TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256``,
+    /// ``TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384``,
+    /// ``TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256`` and
+    /// ``TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384`` under TLS 1.2,
+    /// ``TLS13_AES_128_GCM_SHA256`` and ``TLS13_AES_256_GCM_SHA384`` under
     /// TLS 1.3.
     ///
     /// Only valid before `start()`.
@@ -6868,11 +6879,16 @@ impl PyIedServer {
     ///
     /// The callbacks receive ``(path, ctl_val, action_dict)``:
     ///
-    /// - ``check`` (sync): return value is ignored, raise to reject;
-    /// - ``operate`` (sync **or** ``async``): return value is ignored on
-    ///   success, raise to reject;
-    /// - ``wait`` (sync **or** ``async``): same shape as ``operate``,
-    ///   driven only by ``sbo-enhanced`` after the operate phase.
+    /// - ``check`` (sync only; an ``async def`` is never awaited): runs on
+    ///   Select, SelectWithValue and Operate; its return value is ignored,
+    ///   raise to reject;
+    /// - ``wait`` (sync **or** ``async``): the dynamic check, run on Operate
+    ///   under every control model after ``check`` and before the Operate
+    ///   response; raise or return ``False`` to reject;
+    /// - ``operate`` (sync **or** ``async``): runs after a positive Operate
+    ///   response; raise or return ``False`` to reject. An Operate on an
+    ///   object registered without ``operate`` is refused with
+    ///   ``NotSupported``.
     ///
     /// Set ``add_cause`` on the raised exception (e.g.
     /// ``"BlockedByInterlocking"``, ``"NotSupported"``, or the numeric
@@ -7169,7 +7185,8 @@ impl PyIedServer {
     /// (``"seq_num"`` / ``"time_stamp"`` / ``"reason"`` / ``"data_set"`` /
     /// ``"data_reference"`` / ``"conf_rev"`` / ``"buffer_overflow"`` /
     /// ``"entry_id"``). Note that ``buffer_overflow`` and ``entry_id`` are
-    /// masked out on the wire for URCBs by IEC 61850-7-2 §15.
+    /// cleared on the wire for URCBs, which have no buffer and no EntryID
+    /// (IEC 61850-7-2 §17.2.4).
     ///
     /// Only valid before `start()`.
     #[pyo3(signature = (
@@ -7247,8 +7264,8 @@ impl PyIedServer {
     /// Mirrors `register_urcb` but binds to a buffered MMS path
     /// (`"<LD>/<LN>.<rcb_name>"` resolves to ``"<domain>/<LN>$BR$<rcb_name>"``).
     ///
-    /// `buffer_capacity` is the entry-count ring size (IEC 61850-7-2 §15
-    /// IC-2 — entry-count, not byte-count); the default of 64 matches the
+    /// `buffer_capacity` is the entry-count ring size (entries, not bytes);
+    /// the default of 64 matches the
     /// underlying `iec61850-server` Brcb default. ``buffer_overflow`` and
     /// ``entry_id`` opt_flds are honored on the wire (URCB masks them out).
     ///
