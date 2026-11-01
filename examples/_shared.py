@@ -65,12 +65,7 @@ class DemoPaths:
 
     @property
     def srv_volts(self) -> str:
-        """Phase-A voltage.
-
-        Server-side only: it is reachable through `dsMeas` and reports, but
-        the Read service does not yet resolve a client reference that walks
-        into an SDO (`MMXU1.PhV.phsA.cVal.mag.f`).
-        """
+        """Phase-A voltage, inside the `PhV` WYE sub-data object."""
         return f"{self.ld}/MMXU1.PhV.phsA.cVal.mag.f"
 
     @property
@@ -97,6 +92,10 @@ class DemoPaths:
     @property
     def freq(self) -> str:
         return f"{self.domain}/MMXU1.Hz.mag.f"
+
+    @property
+    def volts(self) -> str:
+        return f"{self.domain}/MMXU1.PhV.phsA.cVal.mag.f"
 
     @property
     def mode(self) -> str:

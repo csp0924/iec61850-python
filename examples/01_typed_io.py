@@ -10,6 +10,7 @@ Expected stdout:
     switch:  open   q=good   t=00:00:00
     power:     230.50 kW
     freq:       50.00 Hz
+    volts:   11000.00 V
     mode:    1  (1=on, 2=blocked, 5=off)
 
     parallel read: 230.50 kW / 50.00 Hz
@@ -25,12 +26,13 @@ from _shared import DEMO
 
 
 async def snapshot(client: iec61850.Iec61850Client) -> None:
-    """Print one consistent view of the switch, the measurands, and the mode."""
+    """Print one view of the switch, the measurands, and the mode."""
     conn = client.connection
-    switch, power, freq, mode = await asyncio.gather(
+    switch, power, freq, volts, mode = await asyncio.gather(
         conn.read_bool(f"{DEMO.switch}.stVal", iec61850.FC.ST),
         conn.read_float(DEMO.power, iec61850.FC.MX),
         conn.read_float(DEMO.freq, iec61850.FC.MX),
+        conn.read_float(DEMO.volts, iec61850.FC.MX),
         conn.read_int32(DEMO.mode, iec61850.FC.ST),
     )
     quality = await conn.read_quality(f"{DEMO.switch}.q", iec61850.FC.ST)
@@ -43,6 +45,7 @@ async def snapshot(client: iec61850.Iec61850Client) -> None:
     )
     print(f"power:  {power:9.2f} kW")
     print(f"freq:   {freq:9.2f} Hz")
+    print(f"volts:  {volts:9.2f} V")
     print(f"mode:    {mode}  (1=on, 2=blocked, 5=off)")
 
 
