@@ -212,11 +212,60 @@ class OriginValue:
 
 
 @dataclass(frozen=True, slots=True)
+class LastApplError:
+    """``LastApplError`` the server reported for a refused or failed control
+    command (IEC 61850-8-1 §20.11, IEC 61850-7-2 §20.1.4).
+
+    ``error`` is the ``Error`` value as a token: ``"no-error"``,
+    ``"unknown"``, ``"timeout-test-not-ok"`` or ``"operator-test-not-ok"``.
+    """
+
+    ctl_obj: str
+    error: str
+    or_cat: int
+    or_ident: bytes
+    ctl_num: int
+    add_cause: ControlAddCause
+
+    @classmethod
+    def from_native(cls, raw: dict[str, Any]) -> "LastApplError":
+        return cls(
+            ctl_obj=raw["ctl_obj"],
+            error=raw["error"],
+            or_cat=raw["or_cat"],
+            or_ident=raw["or_ident"],
+            ctl_num=raw["ctl_num"],
+            add_cause=ControlAddCause(raw["add_cause"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ControlOutcome:
-    """Result of ``select`` / ``operate`` / ``cancel``."""
+    """Result of ``select`` / ``select_with_value`` / ``operate`` / ``cancel``.
+
+    ``add_cause`` is ``None`` on success. ``last_appl_error`` is the
+    LastApplError the server reported for the command, or ``None`` when it
+    sent none; the enhanced-security models always send one, the
+    normal-security models may not. The truth value of an outcome is
+    ``success``.
+    """
 
     success: bool
     add_cause: ControlAddCause | None = None
+    last_appl_error: LastApplError | None = None
+
+    def __bool__(self) -> bool:
+        return self.success
+
+    @classmethod
+    def from_native(cls, raw: dict[str, Any]) -> "ControlOutcome":
+        cause = raw.get("add_cause")
+        lae = raw.get("last_appl_error")
+        return cls(
+            success=raw["success"],
+            add_cause=ControlAddCause(cause) if cause is not None else None,
+            last_appl_error=LastApplError.from_native(lae) if lae is not None else None,
+        )
 
     @classmethod
     def from_pair(cls, pair: tuple[bool, str | None]) -> "ControlOutcome":

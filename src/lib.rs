@@ -16,9 +16,9 @@ use std::sync::{Arc, RwLock as StdRwLock};
 use std::time::Duration;
 
 use iec61850_client::control::{
-    ControlAddCause as RustControlAddCause, ControlModel as RustControlModel,
-    ControlObjectClient as RustControlObjectClient, ControlOutcome as RustControlOutcome,
-    OriginValue as RustOriginValue, SboClass as RustSboClass,
+    ControlAddCause as RustControlAddCause, ControlLastApplError as RustControlLastApplError,
+    ControlModel as RustControlModel, ControlObjectClient as RustControlObjectClient,
+    ControlOutcome as RustControlOutcome, OriginValue as RustOriginValue, SboClass as RustSboClass,
 };
 use iec61850_client::{
     AcsiClass as RustAcsiClass, ClientError, ClientJournalEntry as RustJournalEntry,
@@ -1967,8 +1967,9 @@ impl PyControlObjectClient {
         Ok(())
     }
 
-    /// SBO-normal select: Read `<LN>$CO$<DO>$SBO`. Returns ``True`` when the
-    /// server accepted the selection.
+    /// SBO-normal select: Read `<LN>$CO$<DO>$SBO`.
+    ///
+    /// Resolves to the outcome mapping described on `operate`.
     fn select<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let handle = Arc::clone(&self.inner);
         future_into_py(py, async move {
@@ -1977,13 +1978,13 @@ impl PyControlObjectClient {
                 .select()
                 .await
                 .map_err(|e| map_client_error(e, ErrCtx::Service))?;
-            Ok(outcome.is_success())
+            Python::attach(|py| outcome_to_pydict(py, &outcome).map(Bound::unbind))
         })
     }
 
     /// SBO-enhanced select-with-value: Write `<LN>$CO$<DO>$SBOw`.
     ///
-    /// Returns ``(success: bool, add_cause: str | None)``.
+    /// Resolves to the outcome mapping described on `operate`.
     fn select_with_value<'py>(
         &self,
         py: Python<'py>,
@@ -1997,14 +1998,17 @@ impl PyControlObjectClient {
                 .select_with_value(mms)
                 .await
                 .map_err(|e| map_client_error(e, ErrCtx::Service))?;
-            Ok(outcome_to_pair(&outcome))
+            Python::attach(|py| outcome_to_pydict(py, &outcome).map(Bound::unbind))
         })
     }
 
     /// Operate: Write `<LN>$CO$<DO>$Oper`.
     ///
     /// In ``direct-enhanced`` / ``sbo-enhanced`` mode this also waits for
-    /// `CommandTermination+/-`. Returns ``(success: bool, add_cause: str | None)``.
+    /// `CommandTermination+/-`. Resolves to a mapping with ``success``
+    /// (``bool``), ``add_cause`` (token or ``None`` on success) and
+    /// ``last_appl_error`` (the LastApplError the server reported for the
+    /// command as a mapping, or ``None`` when it sent none).
     fn operate<'py>(
         &self,
         py: Python<'py>,
@@ -2018,7 +2022,7 @@ impl PyControlObjectClient {
                 .operate(mms)
                 .await
                 .map_err(|e| map_client_error(e, ErrCtx::Service))?;
-            Ok(outcome_to_pair(&outcome))
+            Python::attach(|py| outcome_to_pydict(py, &outcome).map(Bound::unbind))
         })
     }
 
@@ -2036,7 +2040,7 @@ impl PyControlObjectClient {
                 .cancel(mms)
                 .await
                 .map_err(|e| map_client_error(e, ErrCtx::Service))?;
-            Ok(outcome_to_pair(&outcome))
+            Python::attach(|py| outcome_to_pydict(py, &outcome).map(Bound::unbind))
         })
     }
 }
@@ -2101,7 +2105,7 @@ fn add_cause_token(c: RustControlAddCause) -> &'static str {
         RustControlAddCause::EndedWithOvershoot => "ended-with-overshoot",
         RustControlAddCause::AbortionDueToDeviation => "abortion-due-to-deviation",
         RustControlAddCause::AbortionByCommunicationLoss => "abortion-by-communication-loss",
-        RustControlAddCause::BlockedByCommand => "abortion-by-command",
+        RustControlAddCause::BlockedByCommand => "blocked-by-command",
         RustControlAddCause::None => "none",
         RustControlAddCause::InconsistentParameters => "inconsistent-parameters",
         RustControlAddCause::LockedByOtherClient => "locked-by-other-client",
@@ -2109,11 +2113,40 @@ fn add_cause_token(c: RustControlAddCause) -> &'static str {
     }
 }
 
-fn outcome_to_pair(outcome: &RustControlOutcome) -> (bool, Option<&'static str>) {
-    (
-        outcome.is_success(),
-        outcome.add_cause().map(add_cause_token),
-    )
+/// Token of the LastApplError ``Error`` value; unknown values read
+/// ``"unknown"``.
+fn last_appl_error_token(e: RustControlLastApplError) -> &'static str {
+    match e {
+        RustControlLastApplError::NoError => "no-error",
+        RustControlLastApplError::TimeoutTestNotOk => "timeout-test-not-ok",
+        RustControlLastApplError::OperatorTestNotOk => "operator-test-not-ok",
+        _ => "unknown",
+    }
+}
+
+/// Builds the outcome mapping `select` / `operate` / `cancel` resolve to.
+fn outcome_to_pydict<'py>(
+    py: Python<'py>,
+    outcome: &RustControlOutcome,
+) -> PyResult<Bound<'py, PyAny>> {
+    let d = PyDict::new(py);
+    d.set_item("success", outcome.is_success())?;
+    d.set_item("add_cause", outcome.add_cause().map(add_cause_token))?;
+    let lae = match outcome.last_appl_error() {
+        Some(e) => {
+            let ld = PyDict::new(py);
+            ld.set_item("ctl_obj", &e.ctl_obj)?;
+            ld.set_item("error", last_appl_error_token(e.error))?;
+            ld.set_item("or_cat", e.origin.or_cat)?;
+            ld.set_item("or_ident", PyBytes::new(py, &e.origin.or_ident))?;
+            ld.set_item("ctl_num", e.ctl_num)?;
+            ld.set_item("add_cause", add_cause_token(e.add_cause))?;
+            Some(ld)
+        }
+        None => None,
+    };
+    d.set_item("last_appl_error", lae)?;
+    Ok(d.into_any())
 }
 
 /// Convert a Python value to a generic ``MmsValue`` for ``write_object``.

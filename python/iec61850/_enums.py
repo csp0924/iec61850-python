@@ -75,7 +75,11 @@ class SboClass(StrEnum):
 
 
 class ControlAddCause(StrEnum):
-    """Reason a control action was rejected (IEC 61850-7-2 §20.1.4)."""
+    """Reason a control action was rejected (IEC 61850-7-2 §20.1.4).
+
+    ``ABORTION_BY_COMMAND`` is an alias of ``BLOCKED_BY_COMMAND`` (value 24),
+    and the token ``"abortion-by-command"`` still parses to it.
+    """
 
     UNKNOWN = "unknown"
     NOT_SUPPORTED = "not-supported"
@@ -101,7 +105,14 @@ class ControlAddCause(StrEnum):
     ENDED_WITH_OVERSHOOT = "ended-with-overshoot"
     ABORTION_DUE_TO_DEVIATION = "abortion-due-to-deviation"
     ABORTION_BY_COMMUNICATION_LOSS = "abortion-by-communication-loss"
-    ABORTION_BY_COMMAND = "abortion-by-command"
+    BLOCKED_BY_COMMAND = "blocked-by-command"
+    ABORTION_BY_COMMAND = "blocked-by-command"
     NONE = "none"
     INCONSISTENT_PARAMETERS = "inconsistent-parameters"
     LOCKED_BY_OTHER_CLIENT = "locked-by-other-client"
+
+    @classmethod
+    def _missing_(cls, value: object) -> "ControlAddCause | None":
+        if value == "abortion-by-command":
+            return cls.BLOCKED_BY_COMMAND
+        return None

@@ -399,26 +399,24 @@ class ControlObjectClient:
     def set_sbo_class(self, sbo_class: SboClass) -> None:
         self._native.set_sbo_class(sbo_class.value)
 
-    async def select(self) -> bool:
-        """SBO-normal select. Returns ``True`` when the server accepted."""
-        return await self._native.select()
+    async def select(self) -> ControlOutcome:
+        """SBO-normal select. The outcome is truthy when the server granted
+        the selection; a refusal carries its ``add_cause``."""
+        return ControlOutcome.from_native(await self._native.select())
 
     async def select_with_value(self, value: Any) -> ControlOutcome:
         """SBO-enhanced select-with-value. The value must match the later
         ``operate`` value or the server returns ``inconsistent-parameters``."""
-        pair = await self._native.select_with_value(value)
-        return ControlOutcome.from_pair(pair)
+        return ControlOutcome.from_native(await self._native.select_with_value(value))
 
     async def operate(self, value: Any) -> ControlOutcome:
         """Operate. In enhanced modes this also waits for
         ``CommandTermination+/-``."""
-        pair = await self._native.operate(value)
-        return ControlOutcome.from_pair(pair)
+        return ControlOutcome.from_native(await self._native.operate(value))
 
     async def cancel(self, value: Any) -> ControlOutcome:
         """Cancel a previously selected operation."""
-        pair = await self._native.cancel(value)
-        return ControlOutcome.from_pair(pair)
+        return ControlOutcome.from_native(await self._native.cancel(value))
 
 
 class IedConnection:

@@ -69,7 +69,8 @@ async def test_sbo_normal_select_then_operate() -> None:
                 _demo.SWITCH, iec61850.ControlModel.SBO_NORMAL
             )
             selected = await spc.select()
-            assert selected is True
+            assert selected.success is True
+            assert selected
             outcome = await spc.operate(True)
             assert outcome.success is True
         finally:
@@ -99,7 +100,7 @@ async def test_direct_normal_check_blocked() -> None:
     """A check handler answering BlockedByInterlocking fails the Operate.
 
     The server reports the refusal with a LastApplError ahead of the negative
-    response, so the outcome carries its add cause.
+    response, so the outcome carries the add cause and the error itself.
     """
     async with _demo.hosted_control("direct-normal", blocked=True) as server:
         conn = await iec61850.IedConnection.connect(server.bound_addr)
@@ -109,7 +110,13 @@ async def test_direct_normal_check_blocked() -> None:
             )
             outcome = await spc.operate(True)
             assert outcome.success is False
+            assert not outcome
             assert outcome.add_cause is iec61850.ControlAddCause.BLOCKED_BY_INTERLOCKING
+            lae = outcome.last_appl_error
+            assert lae is not None
+            assert lae.ctl_obj == f"{_demo.DOMAIN}/GGIO1$CO$SPCSO1$Oper"
+            assert lae.add_cause is iec61850.ControlAddCause.BLOCKED_BY_INTERLOCKING
+            assert lae.error == "no-error"
         finally:
             await conn.disconnect()
 
@@ -136,7 +143,7 @@ async def test_cancel_after_select() -> None:
             spc = conn.create_control_object(
                 _demo.SWITCH, iec61850.ControlModel.SBO_NORMAL
             )
-            assert (await spc.select()) is True
+            assert (await spc.select()).success is True
             outcome = await spc.cancel(True)
             assert outcome.success is True
         finally:
@@ -176,3 +183,76 @@ async def test_origin_setter_and_test_flag() -> None:
             assert outcome.success is True
         finally:
             await conn.disconnect()
+
+
+async def test_sbo_enhanced_refused_select_carries_last_appl_error() -> None:
+    """A refused SelectWithValue reports the LastApplError of the SBOw."""
+    async with _demo.hosted_control("sbo-enhanced", blocked=True) as server:
+        conn = await iec61850.IedConnection.connect(server.bound_addr)
+        try:
+            spc = conn.create_control_object(
+                _demo.SWITCH, iec61850.ControlModel.SBO_ENHANCED
+            )
+            sel = await spc.select_with_value(True)
+            assert not sel
+            assert sel.add_cause is iec61850.ControlAddCause.BLOCKED_BY_INTERLOCKING
+            lae = sel.last_appl_error
+            assert lae is not None
+            assert lae.ctl_obj == f"{_demo.DOMAIN}/GGIO1$CO$SPCSO1$SBOw"
+            assert lae.ctl_num == 1
+            assert lae.or_cat == 3
+        finally:
+            await conn.disconnect()
+
+
+async def test_sbo_normal_second_select_is_refused() -> None:
+    """A selection the client already holds cannot be taken again."""
+    async with _demo.hosted_control("sbo-normal") as server:
+        conn = await iec61850.IedConnection.connect(server.bound_addr)
+        try:
+            spc = conn.create_control_object(
+                _demo.SWITCH, iec61850.ControlModel.SBO_NORMAL
+            )
+            assert await spc.select()
+            again = await spc.select()
+            assert again.success is False
+            assert again.add_cause is not None
+        finally:
+            await conn.disconnect()
+
+
+def test_blocked_by_command_keeps_its_former_name() -> None:
+    cause = iec61850.ControlAddCause
+    assert cause.ABORTION_BY_COMMAND is cause.BLOCKED_BY_COMMAND
+    assert cause("abortion-by-command") is cause.BLOCKED_BY_COMMAND
+    assert cause("blocked-by-command") is cause.BLOCKED_BY_COMMAND
+
+
+def test_control_outcome_from_native() -> None:
+    outcome = iec61850.ControlOutcome.from_native(
+        {
+            "success": False,
+            "add_cause": "blocked-by-mode",
+            "last_appl_error": {
+                "ctl_obj": "IED1LD0/CSWI1$CO$Pos$Oper",
+                "error": "unknown",
+                "or_cat": 2,
+                "or_ident": b"op",
+                "ctl_num": 7,
+                "add_cause": "blocked-by-mode",
+            },
+        }
+    )
+    assert not outcome
+    assert outcome.add_cause is iec61850.ControlAddCause.BLOCKED_BY_MODE
+    assert outcome.last_appl_error == iec61850.LastApplError(
+        ctl_obj="IED1LD0/CSWI1$CO$Pos$Oper",
+        error="unknown",
+        or_cat=2,
+        or_ident=b"op",
+        ctl_num=7,
+        add_cause=iec61850.ControlAddCause.BLOCKED_BY_MODE,
+    )
+    assert iec61850.ControlOutcome.from_native(
+        {"success": True, "add_cause": None, "last_appl_error": None}
+    )
