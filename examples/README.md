@@ -45,10 +45,10 @@ over loopback.
 | `07_reporting_unbuffered.py` | `urcbMeas`, `asyncio.Queue` for callback delivery, background pump task, `ClientReport.included` |
 | `08_reporting_buffered.py` | `brcbMeas` + `Iec61850Client(report_dispatcher_interval_ms=…)`, `EntryID`, `BufOvfl` on the first report after enabling |
 | `09_dataset_dynamic.py` | data set CRUD wrapped in `@asynccontextmanager` for lifetime safety |
-| `10_setting_groups.py` | SGCB ActSG / EditSG / CnfEdit; `Auditor` dataclass records every transition |
+| `10_setting_groups.py` | SGCB ActSG / EditSG / CnfEdit with the group number sent as an INT8U; `Auditor` dataclass records every transition |
 | `11_journal_log.py` | LCB writes, journal named by its LogRef, `query_journal` / `query_journal_all` with a `JournalQuery`, ring-buffer eviction |
 | `12_tls_secured_session.py` | mutual TLS with throw-away self-signed identities; `Identity` dataclass |
-| `13_sntp_time_sync.py` | `query_sntp`, typed `SntpResponse`, formatted readout |
+| `13_sntp_time_sync.py` | `query_sntp`, which takes a numeric address and port, so a host name is resolved first; typed `SntpResponse`, formatted readout |
 | `14_dataset_directory_batch_read.py` | `get_data_set_directory` member list, `read_multiple` in one round trip, `DataAccessFailure` markers, cloning a data set |
 
 Two recipes build their own model rather than loading `demo.cid`, because
