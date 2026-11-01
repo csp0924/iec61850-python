@@ -6848,14 +6848,13 @@ impl PyIedServer {
     /// client raises `IedAuthenticationError` for diagnostics 3 to 6 and 11
     /// to 14.
     ///
-    /// The callable runs synchronously on a server worker thread while the
-    /// association is set up. A wait that releases the GIL (``Event.wait``,
-    /// socket I/O, ``time.sleep``) does not hold up other associations, but
-    /// it occupies that worker until it returns, so many such waits at once
-    /// exhaust the workers; computation that holds the GIL stalls every
-    /// Python callback of the process. Keep it short and do slow checks
-    /// elsewhere. A password reaches it in clear unless the association runs
-    /// over TLS.
+    /// The server calls the callable while the association is set up, on a
+    /// thread of its bounded blocking pool, not on a runtime worker. A wait
+    /// that releases the GIL (``Event.wait``, socket I/O, ``time.sleep``)
+    /// does not hold up other associations, though while the pool is full
+    /// further callbacks queue; computation that holds the GIL stalls every
+    /// Python callback of the process. Keep it short. A password reaches it
+    /// in clear unless the association runs over TLS.
     ///
     /// Before `start()` it is installed with the server, so no association
     /// is accepted without it; on a running server it applies to the
@@ -7163,6 +7162,14 @@ impl PyIedServer {
     /// The server holds no lock while the callback runs, so it may call the
     /// ``update_*`` methods.
     ///
+    /// The server calls the callback on a thread of its bounded blocking
+    /// pool, not on a runtime worker, and takes the GIL there: a blocking
+    /// wait does not hold up other associations, though while the pool is
+    /// full further callbacks queue; computation that holds the GIL stalls
+    /// every Python callback. Successive calls may run on different threads,
+    /// so ``threading.local`` state does not carry over, and callbacks of
+    /// different associations may interleave.
+    ///
     /// Registration is allowed before `start()` (queued) and during
     /// `Running` (installed immediately). Re-registering the same path
     /// replaces the previous callback.
@@ -7245,6 +7252,14 @@ impl PyIedServer {
     /// time limit of an executing command, 0 for none) apply where the model
     /// declares no `ctlModel`, `sboTimeout`, `sboClass` or `operTimeout`
     /// attribute; a declared attribute takes precedence.
+    ///
+    /// The server calls each callback on a thread of its bounded blocking
+    /// pool, not on a runtime worker, and takes the GIL there: a blocking
+    /// wait does not hold up other associations, though while the pool is
+    /// full further callbacks queue; computation that holds the GIL stalls
+    /// every Python callback. Successive calls may run on different threads,
+    /// so ``threading.local`` state does not carry over, and callbacks of
+    /// different associations may interleave.
     #[pyo3(signature = (
         path, *, ctl_model, check=None, operate=None, wait=None,
         sbo_timeout_ms=30_000, sbo_class="operate-once", oper_timeout_ms=0,
@@ -7332,6 +7347,14 @@ impl PyIedServer {
     /// named, which is the handler's own path, a node above it or a node
     /// below it. The server holds no lock while the callback runs, so it may
     /// call the ``update_*`` methods.
+    ///
+    /// The server calls the callback on a thread of its bounded blocking
+    /// pool, not on a runtime worker, and takes the GIL there: a blocking
+    /// wait does not hold up other associations, though while the pool is
+    /// full further callbacks queue; computation that holds the GIL stalls
+    /// every Python callback. Successive calls may run on different threads,
+    /// so ``threading.local`` state does not carry over, and callbacks of
+    /// different associations may interleave.
     ///
     /// Registration is allowed before `start()` (queued) and during
     /// `Running` (installed immediately). Re-registering the same path
@@ -7525,6 +7548,12 @@ impl PyIedServer {
     /// ``"entry_id"``). Note that ``buffer_overflow`` and ``entry_id`` are
     /// cleared on the wire for URCBs, which have no buffer and no EntryID
     /// (IEC 61850-7-2 §17.2.4).
+    ///
+    /// The server stores log entries and delivers reports without calling
+    /// Python code. An ``update_*`` that arrives while another thread's
+    /// update is being delivered waits for that delivery, so triggers are
+    /// delivered in the order the values were stored; a value overwritten
+    /// within one client write request is not delivered on its own.
     ///
     /// Only valid before `start()`.
     #[pyo3(signature = (
@@ -7723,6 +7752,12 @@ impl PyIedServer {
     ///
     /// `default_enabled=True` flips `LogEna` to enabled at `start()`. Toggle
     /// at runtime via `set_log_ena`.
+    ///
+    /// The server stores log entries and delivers reports without calling
+    /// Python code. An ``update_*`` that arrives while another thread's
+    /// update is being delivered waits for that delivery, so triggers are
+    /// delivered in the order the values were stored; a value overwritten
+    /// within one client write request is not delivered on its own.
     ///
     /// Only valid before `start()`.
     #[pyo3(signature = (
@@ -7925,6 +7960,14 @@ impl PyIedServer {
     /// with ``ObjectAccessDenied``; a refused confirmation commits nothing
     /// and leaves the edit session open. An exception is reported through
     /// ``sys.unraisablehook``.
+    ///
+    /// The server calls each callback on a thread of its bounded blocking
+    /// pool, not on a runtime worker, and takes the GIL there: a blocking
+    /// wait does not hold up other associations, though while the pool is
+    /// full further callbacks queue; computation that holds the GIL stalls
+    /// every Python callback. Successive calls may run on different threads,
+    /// so ``threading.local`` state does not carry over, and callbacks of
+    /// different associations may interleave.
     ///
     /// The callbacks are queued at NotStarted and bound to the registry at
     /// `start()`. Calling at runtime is also supported and replaces any
