@@ -782,6 +782,52 @@ async def test_abort_all_connections_closes_every_association() -> None:
                 pass
 
 
+async def test_abort_connection_closes_only_the_named_association() -> None:
+    server = _demo_server()
+    readers: list[int] = []
+
+    def handler(_path: str, ctx: dict) -> None:
+        readers.append(ctx["conn_id"])
+
+    server.on_read(_demo.SRV_IND1, handler, with_context=True)
+    async with server:
+        kept = await IedConnection.connect(server.bound_addr)
+        kicked = await IedConnection.connect(server.bound_addr)
+        try:
+            await kept.read_bool(_demo.IND1, FC.ST)
+            await kicked.read_bool(_demo.IND1, FC.ST)
+            kept_id, kicked_id = readers
+            assert kept_id != kicked_id
+
+            server.abort_connection(kicked_id)
+            assert await _until(lambda: server.connection_count == 1)
+            with pytest.raises(IedConnectionError) as lost:
+                await kicked.read_bool(_demo.IND1, FC.ST)
+            assert lost.value.reason == "connection-lost"
+            assert kicked.is_connected is False
+
+            assert await kept.read_bool(_demo.IND1, FC.ST) is not None
+            assert kept.is_connected is True
+            assert readers[-1] == kept_id
+        finally:
+            await kept.disconnect()
+            await kicked.abort()
+
+
+async def test_abort_connection_ignores_an_unknown_id() -> None:
+    server = _demo_server()
+    with pytest.raises(RuntimeError, match="not running"):
+        server.abort_connection(1)
+    async with server:
+        conn = await IedConnection.connect(server.bound_addr)
+        try:
+            assert server.abort_connection(2**63) is None
+            assert await conn.read_bool(_demo.IND1, FC.ST) is not None
+            assert server.connection_count == 1
+        finally:
+            await conn.disconnect()
+
+
 async def test_dynamic_dataset_count_follows_client_data_sets() -> None:
     server = _demo_server()
     _demo.wire_control_blocks(server)
