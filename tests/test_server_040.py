@@ -758,8 +758,35 @@ async def test_write_access_policy_refusing_sp_blocks_client_writes() -> None:
             assert await conn.read_int32(_demo.WRITABLE_SETPOINT, FC.SP) == 0
         finally:
             await conn.disconnect()
-        with pytest.raises(RuntimeError, match="cannot reconfigure after start"):
+    with pytest.raises(RuntimeError, match="stopped"):
+        server.set_write_access_policy("SP", True)
+
+
+async def test_write_access_policy_changes_apply_while_running() -> None:
+    """Closing and reopening a constraint on a running server governs the
+    writes that arrive afterwards, on an association opened before."""
+    server = _policy_server()
+    async with server:
+        conn = await IedConnection.connect(server.bound_addr)
+        try:
+            await conn.write_int32(_demo.WRITABLE_SETPOINT, FC.SP, 1)
+            server.set_write_access_policy("SP", False)
+            assert server.write_access_allowed("SP") is False
+            with pytest.raises(IedDataAccessError) as info:
+                await conn.write_int32(_demo.WRITABLE_SETPOINT, FC.SP, 2)
+            assert info.value.code == 3  # object-access-denied
+            assert await conn.read_int32(_demo.WRITABLE_SETPOINT, FC.SP) == 1
             server.set_write_access_policy("SP", True)
+            await conn.write_int32(_demo.WRITABLE_SETPOINT, FC.SP, 3)
+            assert await conn.read_int32(_demo.WRITABLE_SETPOINT, FC.SP) == 3
+
+            with pytest.raises(IedDataAccessError):
+                await conn.write_int32(CFG_REF, FC.CF, 5)
+            server.set_write_access_policy("CF", True)
+            await conn.write_int32(CFG_REF, FC.CF, 5)
+            assert await conn.read_int32(CFG_REF, FC.CF) == 5
+        finally:
+            await conn.disconnect()
 
 
 # ── abort_all_connections / dynamic_dataset_count ───────────────────────────

@@ -6750,8 +6750,11 @@ impl PyIedServer {
     /// default ``SP``, ``SV`` and ``SE`` are allowed. A refused write fails
     /// with ``ObjectAccessDenied`` before any ``on_write`` handler runs.
     ///
-    /// Only valid before `start()`. Raises `ValueError` for an unknown token
-    /// or a constraint that is never writable, such as ``"ST"`` or ``"MX"``.
+    /// Before `start()` it sets the policy the server starts with; on a
+    /// running server it applies to every write that arrives afterwards.
+    /// Raises `ValueError` for an unknown token or a constraint that is never
+    /// writable, such as ``"ST"`` or ``"MX"``, and `RuntimeError` once the
+    /// server has been stopped.
     fn set_write_access_policy(&self, fc: &str, allow: bool) -> PyResult<()> {
         let caller = "set_write_access_policy";
         let fc = parse_fc(fc)?;
@@ -6763,9 +6766,18 @@ impl PyIedServer {
                 fc.as_str()
             )));
         }
-        self.with_pending_config(caller, |config| {
-            config.write_access_policies.set(fc, allow);
-        })
+        match &mut *self.state.lock().unwrap() {
+            ServerState::NotStarted { config, .. } => {
+                config.write_access_policies.set(fc, allow);
+                Ok(())
+            }
+            ServerState::Running { server, .. } => server
+                .set_write_access_policy(fc, allow)
+                .map_err(map_server_error),
+            ServerState::Stopped => Err(PyRuntimeError::new_err(format!(
+                "{caller}: server has been stopped"
+            ))),
+        }
     }
 
     /// Install the callable that decides on every association request, or

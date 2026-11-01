@@ -292,8 +292,8 @@ The hosted server answers Identify with the `vendor`, `model_name` and
 | Array element access (read / write) | yes  |   yes   |  yes   |  yes   |
 
 2. Server applies the write access policy (default `SP | SV | SE`;
-   `set_write_access_policy` also opens `DC`, `CF` and `BL` before
-   `start()`) and any registered `on_read` / `on_write` callbacks, which
+   `set_write_access_policy` also opens `DC`, `CF` and `BL`, before
+   `start()` or while running) and any registered `on_read` / `on_write` callbacks, which
    are asked for reads and writes above and below their own path and can
    receive the request context. `update_array` updates a whole array
    attribute as one batch.
@@ -1251,8 +1251,8 @@ asyncio.run(main())
 ```
 
 Configuration setters (`vendor`, `model_name`, `revision`, `max_connections`,
-the association limits below, `set_edition` and `set_write_access_policy`)
-must be called before `start()`. `vendor`, `model_name`, `revision`,
+the association limits below and `set_edition`) must be called before
+`start()`; `set_write_access_policy` also works on a running server. `vendor`, `model_name`, `revision`,
 `max_connections` and the association limits are write-only: reading one
 raises `AttributeError`.
 
@@ -1369,7 +1369,9 @@ difference is that under `"ed2.1"` a client may not write the `GoID` and
 `set_write_access_policy(fc, allow)` allows or refuses remote writes under
 `"DC"`, `"CF"`, `"SP"`, `"SV"`, `"SE"` or `"BL"`; `SP`, `SV` and `SE` are
 allowed by default. A refused write fails with `ObjectAccessDenied` before
-any `on_write` handler runs. `write_access_allowed(fc)` reports the policy.
+any `on_write` handler runs. On a running server a change applies to every
+write that arrives afterwards, on associations already open as well.
+`write_access_allowed(fc)` reports the policy.
 
 ### Association authentication
 
@@ -2247,6 +2249,8 @@ Tracks iec61850-rust v0.4.0.
   `diagnostic_name`, and `IedServer.set_authenticator(callable)`, which
   decides on every association request from its AP-titles, AE-qualifiers and
   credentials.
+- `IedServer.set_write_access_policy` also applies on a running server, to the
+  writes that arrive afterwards.
 
 #### Fixed
 
