@@ -215,7 +215,8 @@ normally; none of this is needed any more.
 
 ## Conformance (PICS)
 
-ACSI service support per IEC 61850-7-2 Edition 2.1.
+ACSI service support per IEC 61850-7-2 Edition 2; the section numbers
+below follow that edition.
 
 - **Py-C / Py-S** — exposed through *this* Python package (client / server).
 - **Rust-C / Rust-S** — supported somewhere in the upstream
@@ -228,7 +229,7 @@ follow the upstream conformance statement,
 [`docs/PICS.md`](https://github.com/csp0924/iec61850-rust/blob/main/docs/PICS.md),
 which carries the full per-service detail.
 
-### Application Association (§7)
+### Application Association (§8)
 
 | Service                        |  Py-C   |  Py-S   | Rust-C | Rust-S |
 |--------------------------------|:-------:|:-------:|:------:|:------:|
@@ -246,7 +247,7 @@ which carries the full per-service detail.
    certificate chain is always validated. A failed client handshake raises
    `IedTlsError` with its `kind`. Backed by `iec61850-tls`.
 
-### Server class (§8)
+### Server class (§7)
 
 | Service                      | Py-C | Py-S | Rust-C | Rust-S |
 |------------------------------|:----:|:----:|:------:|:------:|
@@ -291,7 +292,7 @@ The hosted server answers Identify with the `vendor`, `model_name` and
 `GetDataValues` covers both the single read (`read`) and the batched form
 (`read_multiple`), which carries any set of references in one MMS Read.
 
-### Data Set class (§12)
+### Data Set class (§13)
 
 | Service                       | Py-C |  Py-S   | Rust-C | Rust-S |
 |-------------------------------|:----:|:-------:|:------:|:------:|
@@ -307,7 +308,7 @@ The hosted server answers Identify with the `vendor`, `model_name` and
    data set the model declares, `register_from_model()`; either bound to a
    control block or exposed standalone for `GetDataSetValues`.
 
-### Substitution (§13)
+### Substitution (§5.3.3)
 
 | Service                              |    Py-C     |    Py-S     |   Rust-C    |   Rust-S    |
 |--------------------------------------|:-----------:|:-----------:|:-----------:|:-----------:|
@@ -318,7 +319,7 @@ The hosted server answers Identify with the `vendor`, `model_name` and
     policy, and `MV`, `CMV` and `SAV` carry the substitution attributes, but
     a read does not itself switch to the substituted value.
 
-### Setting Group Control Block — SGCB (§14)
+### Setting Group Control Block — SGCB (§16)
 
 | Service                               |    Py-C     |  Py-S   |   Rust-C    | Rust-S |
 |---------------------------------------|:-----------:|:-------:|:-----------:|:------:|
@@ -343,7 +344,7 @@ The hosted server answers Identify with the `vendor`, `model_name` and
    ``write("IED1LD0/LLN0.SGCB.ActSG", FC.SP, 2)``); neither has a dedicated
    setting-group API.
 
-### Reporting — URCB / BRCB (§17)
+### Reporting — URCB / BRCB (§17.2)
 
 | Service                                        | Py-C |  Py-S   | Rust-C | Rust-S |
 |------------------------------------------------|:----:|:-------:|:------:|:------:|
@@ -361,7 +362,7 @@ The hosted server answers Identify with the `vendor`, `model_name` and
    the `update_*` trigger path. The first report after each enable carries
    `BufOvfl` set.
 
-### Logging — LCB / Log (§15)
+### Logging — LCB / Log (§17.3)
 
 | Service                                | Py-C |  Py-S   | Rust-C | Rust-S |
 |----------------------------------------|:----:|:-------:|:------:|:------:|
@@ -1440,9 +1441,10 @@ Trigger options: `"data_changed"`, `"quality_changed"`, `"data_update"`,
 `"integrity"`, `"gi"`, plus the aliases `"all"` and `"none"`.
 
 Optional fields: `"seq_num"`, `"time_stamp"`, `"reason"`, `"data_set"`,
-`"data_reference"`, `"conf_rev"`, `"buffer_overflow"`, `"entry_id"`. Per
-IEC 61850-7-2 §15, `buffer_overflow` and `entry_id` are masked out on the
-wire for unbuffered reports.
+`"data_reference"`, `"conf_rev"`, `"buffer_overflow"`, `"entry_id"`. An
+unbuffered control block has no buffer and no EntryID (IEC 61850-7-2
+§17.2.4), so the server clears `buffer_overflow` and `entry_id` from its
+reports.
 
 Datasets without a URCB are still reachable via `get_data_set_values`.
 
@@ -1474,8 +1476,8 @@ server.register_brcb(
 )
 ```
 
-Per IEC 61850-7-2 §15, `buffer_overflow` and `entry_id` are honored on
-the wire for BRCBs (URCBs mask them out). Additional knobs:
+A BRCB sends `buffer_overflow` and `entry_id` when they are selected
+(IEC 61850-7-2 §17.2.2.8); a URCB clears them. Additional knobs:
 
 - `buffer_capacity` (default `64`) — entry-count ring size; the buffer
   evicts oldest entries when full and surfaces overflow through the
