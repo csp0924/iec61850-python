@@ -1691,10 +1691,40 @@ async with server:
     ...
 ```
 
-`type` accepts every IEC 61850-7-3 spelling (`"Boolean"`, `"Int24"`,
-`"Int32"`, `"Float32"`, `"Enumerated"`, `"Timestamp"`, `"Quality"`,
-`"SvOptFlds"`, `"LogOptFlds"`, …); sized
-variants use the object form `{"type": "OctetString", "max_len": 64}`.
+`type` takes one of these tokens, spelled exactly so:
+
+| Group            | Tokens |
+|------------------|--------|
+| Boolean          | `"Boolean"` |
+| Signed integers  | `"Int8"`, `"Int16"`, `"Int24"`, `"Int32"`, `"Int64"`, `"Int128"` |
+| Unsigned         | `"Int8U"`, `"Int16U"`, `"Int24U"`, `"Int32U"` |
+| Floating point   | `"Float32"`, `"Float64"` |
+| Enumerations     | `"Enumerated"`, `"CodedEnum"` (two bits, such as a `Dbpos`) |
+| Strings          | `"VisibleString"`, `"OctetString"`, `"UnicodeString255"` |
+| Bit strings      | `"GenericBitString"`, `"Quality"`, `"Check"`, `"OptFlds"`, `"TrgOpsBits"`, `"SvOptFlds"`, `"LogOptFlds"` |
+| Time             | `"Timestamp"`, `"EntryTime"` |
+| Other            | `"PhyComAddr"`, `"Currency"`, `"Constructed"` |
+
+`"VisibleString"` and `"OctetString"` take a maximum length in bytes and
+`"GenericBitString"` one in bits, through the object form
+`{"type": "OctetString", "max_len": 64}`; without it they default to 64,
+64 and 8. Any other spelling raises `ValueError`, and so does an SCL
+`bType` name (`BOOLEAN`, `INT32`, `Dbpos`, `VisString64`, …), which is not a
+token. The SCL types translate as follows:
+
+| SCL `bType`                                  | `type`                                          |
+|----------------------------------------------|-------------------------------------------------|
+| `BOOLEAN`, `INT8` … `INT128`, `INT8U` … `INT32U`, `FLOAT32`, `FLOAT64` | the token of the same name in the case above (`"Boolean"`, `"Int8"`, `"Int8U"`, `"Float32"`, …) |
+| `Enum`                                       | `"Enumerated"`                                  |
+| `Dbpos`, `Tcmd`                              | `"CodedEnum"`                                   |
+| `VisString32` … `VisString255`               | `{"type": "VisibleString", "max_len": n}`       |
+| `ObjRef`                                     | `{"type": "VisibleString", "max_len": 129}`     |
+| `Octet6`, `Octet16`, `Octet64`               | `{"type": "OctetString", "max_len": n}`         |
+| `EntryID`                                    | `{"type": "OctetString", "max_len": 8}`         |
+| `Unicode255`                                 | `"UnicodeString255"`                            |
+| `TrgOps`                                     | `"TrgOpsBits"`                                  |
+| `Struct`                                     | an entry under `"constructed_das"` (below)      |
+| `Quality`, `Timestamp`, `Check`, `EntryTime`, `PhyComAddr`, `Currency`, `OptFlds`, `SvOptFlds`, `LogOptFlds` | the same name |
 `value` is a tagged dict (`{"type": "int", "value": 1}`, `{"type":
 "bit_string", "padding": 3, "data": b"\x00\x00"}`, …) or
 `{"type": "default"}` for the type's zero. Constructed (SDA-bearing)
