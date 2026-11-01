@@ -169,16 +169,24 @@ async def spawn_demo(
     *,
     bind: str = "127.0.0.1:0",
     control_blocks: bool = True,
+    edit_scl: Callable[[str], str] | None = None,
     configure: Callable[[iec61850.IedServer], None] | None = None,
 ) -> AsyncIterator[iec61850.IedServer]:
     """Spin up the demonstration IED on a free port and yield it.
 
     `control_blocks` wires the data sets and RCBs declared in the CID.
+    `edit_scl` receives the CID text and returns the SCL to load instead, for
+    recipes that need a value the CID declares differently, such as the
+    control model.
     `configure` runs after `bind()` but before `async with server`, so the
     example can register further data sets, RCBs, or control handlers — all
     of which have to land before the server starts.
     """
-    server = iec61850.IedServer.from_scl(DEMO.cid, ied_name=DEMO.ied)
+    if edit_scl is None:
+        server = iec61850.IedServer.from_scl(DEMO.cid, ied_name=DEMO.ied)
+    else:
+        text = edit_scl(DEMO.cid.read_text(encoding="utf-8"))
+        server = iec61850.IedServer.from_scl_str(text, ied_name=DEMO.ied)
     server.bind(bind)
     if control_blocks:
         wire_control_blocks(server)
