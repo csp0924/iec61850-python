@@ -1025,6 +1025,36 @@ cause at all, so it reads `unknown`. Add cause 24 is
 `ControlAddCause.BLOCKED_BY_COMMAND` (`"blocked-by-command"`);
 `ABORTION_BY_COMMAND` remains an alias.
 
+The value given to `select_with_value`, `operate` and `cancel` has to encode
+as the `ctlVal` type of the object's common data class (IEC 61850-7-3
+§7.5): a `bool` is sent as BOOLEAN, an `int` as a signed INTEGER and a
+`float` as a single FLOAT32, and a tagged dict, the form `write` takes, as
+the type it names.
+
+| CDC        | `ctlVal`                         | Python value                                                    |
+|------------|----------------------------------|-----------------------------------------------------------------|
+| SPC, DPC   | BOOLEAN                          | `bool`                                                          |
+| INC        | INT32                            | `int`                                                           |
+| ENC        | ENUMERATED                       | `int`                                                           |
+| ISC        | INT8                             | `int`                                                           |
+| BSC, BAC   | CODED ENUM (stop, lower, higher) | `{"type": "bit_string", "padding": 6, "data": b"\x40"}` (lower) |
+| APC        | AnalogueValue (a structure)      | not supported (see below)                                       |
+
+A double point control takes a `bool`, like a single point one; an `int`
+is sent as an INTEGER, which a server that checks the type refuses:
+
+```python
+dpc = conn.create_control_object(
+    "IED1LD0/XCBR1.Pos", iec61850.ControlModel.SBO_ENHANCED
+)
+if await dpc.select_with_value(True):    # True closes, False opens
+    outcome = await dpc.operate(True)
+```
+
+An APC's `ctlVal` is an AnalogueValue structure. The control methods have no
+form for a structure, and a `float` goes out as a lone FLOAT32, which a server
+that checks the type refuses.
+
 ## GOOSE control blocks
 
 A GOOSE control block is administered over MMS like any other control
