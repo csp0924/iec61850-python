@@ -1,10 +1,18 @@
 """Subscribing to the unbuffered report control block declared in the CID.
 
 The flow is the same against any IEC 61850 server: read the RCB, set
-`resv` + `rpt_ena` in one round-trip (Edition 2.1 rejects enable without
-reservation), then install a callback. `poll_reports` drives dispatch
+`resv` + `rpt_ena` in one round-trip, then install a callback. Enabling an
+unreserved URCB reserves it too; it stays reserved after `rpt_ena=False`
+until the client writes `resv=False`. `poll_reports` drives dispatch
 from the current task; for fire-and-forget delivery, see the buffered
 example which uses a background `ReportDispatcher`.
+
+`ClientReport.entries` holds one entry per data set member, keeping the last
+value an earlier report carried for a member this one omits;
+`ClientReport.included` marks the members this report carried, which is what
+the recipe prints. A member reports only the triggers its SCL attribute
+declares (`dchg`, `qchg`, `dupd`), and writing a value equal to the current
+one is not a data change.
 
 When you run the in-process demo (no `remote` argument), a second task pokes
 the measurands so `urcbMeas` has something to fire on. Against a real IED
@@ -79,7 +87,13 @@ async def consume_reports(address: str, *, deadline_s: float = 5.0) -> None:
                     )
                 except asyncio.TimeoutError:
                     break
-                included = [e for e in report.entries if e.ref is not None]
+                included = [
+                    entry
+                    for entry, carried in zip(
+                        report.entries, report.included, strict=True
+                    )
+                    if carried
+                ]
                 print(f"  seq={report.sequence_number} entries={len(included)}")
                 for entry in included:
                     print(f"    {entry.ref}  <-  {entry.value!r}  {reason_of(entry)}")
