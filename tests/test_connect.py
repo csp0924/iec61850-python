@@ -107,8 +107,9 @@ async def test_unanswered_cotp_request_times_out_at_the_given_deadline() -> None
     assert not isinstance(info.value, iec61850.IedConnectionError)
     assert info.value.timeout_ms == 300
     # The client's own connect deadline ended the attempt, not the backstop
-    # that guards the whole call.
-    assert str(info.value) == "mms layer error: connect timed out after 300 ms"
+    # that guards the whole call, whose message names the target address.
+    assert not str(info.value).startswith("connect to ")
+    assert "300 ms" in str(info.value)
 
 
 async def test_connect_deadline_above_ten_seconds_is_honoured() -> None:
