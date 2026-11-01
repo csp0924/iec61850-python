@@ -112,6 +112,44 @@ class Quality:
     test: bool = False
     operator_blocked: bool = False
 
+    def to_bits(self) -> int:
+        """Pack into the integer ``IedConnection.read_quality`` decodes.
+
+        Bit i of the integer (value ``2**i``) is bit i of the 13-bit Quality
+        string, the first bit on the wire being bit 0: bits 0-1 validity
+        (good 0, reserved 1, invalid 2, questionable 3), bits 2-9 the detail
+        flags in declaration order, bit 10 source substituted, bit 11 test,
+        bit 12 operator blocked. ``IedServer.update_quality`` takes the same
+        integer.
+        """
+        d = self.detail
+        flags = (
+            d.overflow,
+            d.out_of_range,
+            d.bad_reference,
+            d.oscillatory,
+            d.failure,
+            d.old_data,
+            d.inconsistent,
+            d.inaccurate,
+            self.source_substituted,
+            self.test,
+            self.operator_blocked,
+        )
+        bits = _VALIDITY_BITS[self.validity]
+        for offset, on in enumerate(flags, start=2):
+            if on:
+                bits |= 1 << offset
+        return bits
+
+
+_VALIDITY_BITS: Mapping[Validity, int] = {
+    Validity.GOOD: 0,
+    Validity.RESERVED: 1,
+    Validity.INVALID: 2,
+    Validity.QUESTIONABLE: 3,
+}
+
 
 @dataclass(frozen=True, slots=True)
 class InclusionReason:

@@ -4639,6 +4639,9 @@ impl Drop for PyIedServer {
     }
 }
 
+/// Width of the IEC 61850-8-1 Quality bit string.
+const QUALITY_BIT_COUNT: u32 = 13;
+
 /// Longest a reclaimed running server waits for its listener to close.
 const SERVER_DROP_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -7810,9 +7813,47 @@ impl PyIedServer {
     /// `value` that does not fit in n bits raises `IedDataAccessError` and
     /// leaves the attribute unchanged; a `value` outside 0..2**32 raises
     /// `OverflowError`, as the other typed updates do.
+    ///
+    /// The bit order is the reverse of the integer ``Quality.to_bits()``
+    /// produces and ``IedConnection.read_quality`` decodes, where bit i of
+    /// the string carries 2**i; write a quality with ``update_quality``.
     fn update_bit_string_from_int(&self, path: &str, value: u32) -> PyResult<()> {
         self.with_da("update_bit_string_from_int", path, |s, da| {
             s.update_bit_string_from_int(da, value)
+        })
+    }
+
+    /// Update a ``Quality`` data attribute.
+    ///
+    /// `quality` is an ``iec61850.Quality`` or the integer
+    /// ``Quality.to_bits()`` returns, in which bit i of the 13-bit string,
+    /// the first bit on the wire being bit 0, carries 2**i (0x0002 is
+    /// validity invalid, 0x0800 test). A client reading the attribute with
+    /// ``IedConnection.read_quality`` gets the same quality back.
+    ///
+    /// An integer outside 0..2**13 raises `ValueError`; an attribute that is
+    /// not a 13-bit string raises `IedDataAccessError` and leaves it
+    /// unchanged.
+    fn update_quality(&self, path: &str, quality: Bound<'_, PyAny>) -> PyResult<()> {
+        let bits: u32 = if quality.is_instance_of::<pyo3::types::PyInt>() {
+            quality.extract()?
+        } else {
+            quality.call_method0("to_bits")?.extract()?
+        };
+        if bits >= 1 << QUALITY_BIT_COUNT {
+            return Err(PyValueError::new_err(format!(
+                "update_quality: {bits:#x} does not fit in the {QUALITY_BIT_COUNT} quality bits"
+            )));
+        }
+        let mut data = [0u8; 2];
+        for i in 0..QUALITY_BIT_COUNT {
+            if bits & (1 << i) != 0 {
+                data[(i / 8) as usize] |= 0x80 >> (i % 8);
+            }
+        }
+        let padding = (16 - QUALITY_BIT_COUNT) as u8;
+        self.with_da("update_quality", path, |s, da| {
+            s.update_bit_string(da, &data, padding)
         })
     }
 

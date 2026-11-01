@@ -25,6 +25,8 @@ from iec61850 import (
     IedConnection,
     IedDataAccessError,
     IedServer,
+    Quality,
+    QualityDetail,
     RcbWriteMask,
     Validity,
 )
@@ -343,6 +345,60 @@ async def test_update_bit_string_quality_bytes() -> None:
         quality = await conn.read_quality(POS_Q, FC.ST)
         assert quality.validity is Validity.INVALID
         assert quality.detail.overflow is True
+
+
+QUALITIES = [
+    Quality(),
+    Quality(validity=Validity.INVALID),
+    Quality(validity=Validity.RESERVED),
+    Quality(validity=Validity.QUESTIONABLE, detail=QualityDetail(old_data=True)),
+    Quality(detail=QualityDetail(overflow=True, inaccurate=True)),
+    Quality(source_substituted=True),
+    Quality(test=True),
+    Quality(operator_blocked=True),
+    Quality(
+        validity=Validity.QUESTIONABLE,
+        detail=QualityDetail(
+            overflow=True,
+            out_of_range=True,
+            bad_reference=True,
+            oscillatory=True,
+            failure=True,
+            old_data=True,
+            inconsistent=True,
+            inaccurate=True,
+        ),
+        source_substituted=True,
+        test=True,
+        operator_blocked=True,
+    ),
+]
+
+
+@pytest.mark.parametrize("quality", QUALITIES)
+async def test_update_quality_reads_back_through_read_quality(quality: Quality) -> None:
+    async with _session() as (server, conn):
+        server.update_quality(SRV_POS_Q, quality)
+        assert await conn.read_quality(POS_Q, FC.ST) == quality
+        server.update_quality(SRV_POS_Q, Quality())
+        server.update_quality(SRV_POS_Q, quality.to_bits())
+        assert await conn.read_quality(POS_Q, FC.ST) == quality
+
+
+async def test_update_quality_takes_the_read_quality_bit_order() -> None:
+    """0x0002 is validity invalid and 0x0800 test, as `read_quality` reads
+    them; on the wire the first bit of the string is bit 0."""
+    async with _session() as (server, conn):
+        server.update_quality(SRV_POS_Q, 0x0002)
+        assert await conn.read_bit_string(POS_Q, FC.ST) == (b"\x40\x00", 3)
+        assert await conn.read_quality(POS_Q, FC.ST) == Quality(validity=Validity.INVALID)
+        server.update_quality(SRV_POS_Q, 0x0800)
+        assert await conn.read_bit_string(POS_Q, FC.ST) == (b"\x00\x10", 3)
+        assert await conn.read_quality(POS_Q, FC.ST) == Quality(test=True)
+        with pytest.raises(ValueError, match="quality bits"):
+            server.update_quality(SRV_POS_Q, 1 << 13)
+        with pytest.raises(IedDataAccessError):
+            server.update_quality(SRV_POS, Quality())
 
 
 @pytest.mark.parametrize(

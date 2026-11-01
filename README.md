@@ -1862,6 +1862,9 @@ Tracks iec61850-rust v0.4.0.
 - `from_model_spec` accepts the attribute types `Int24`, `SvOptFlds` and
   `LogOptFlds`, and a report control block in a spec takes `indexed` and
   `max_instances` (not indexed unless asked, so its name is kept).
+- `IedServer.update_quality(path, quality)` takes a `Quality` or the integer
+  `Quality.to_bits()` returns, in the bit order `read_quality` decodes;
+  `update_bit_string_from_int` keeps its most-significant-bit-first order.
 
 #### Changed behavior (from iec61850-rust 0.4.0)
 
