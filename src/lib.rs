@@ -24,6 +24,7 @@ use iec61850_client::{
     AcsiClass as RustAcsiClass, ClientError, ClientJournalEntry as RustJournalEntry,
     ClientJournalEntryId as RustJournalEntryId, ClientReport as RustClientReport,
     DataSetMember as RustDataSetMember, DeviceModel as RustDeviceModel,
+    GoCBValues as RustGoCBValues, GoCBValuesWrite as RustGoCBValuesWrite,
     IedConnection as RustIedConnection, JournalQuery as RustJournalQuery,
     RcbHandle as RustRcbHandle, RcbWriteMask as RustRcbWriteMask,
     ReportOptFlds as RustReportOptFlds, TriggerOptions as RustTriggerOptions,
@@ -1951,6 +1952,57 @@ impl PyIedConnection {
         })
     }
 
+    /// Read every attribute of a GOOSE control block (ACSI GetGoCBValues).
+    ///
+    /// `reference` is `"<LD>/<LN>.<gcb>"` or `"<LD>/<LN>$GO$<gcb>"`. Resolves
+    /// to the mapping `gocb_values_to_pydict` builds.
+    fn get_gocb_values<'py>(
+        &self,
+        py: Python<'py>,
+        reference: String,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let conn = Arc::clone(&self.inner);
+        future_into_py(py, async move {
+            let values = conn
+                .get_gocb_values(&reference)
+                .await
+                .map_err(|e| map_client_error(e, ErrCtx::Service))?;
+            Python::attach(|py| Ok(gocb_values_to_pydict(py, &values)?.into_any().unbind()))
+        })
+    }
+
+    /// Write attributes of a GOOSE control block (ACSI SetGoCBValues).
+    ///
+    /// Each attribute given is written, DatSet first, then GoID, then GoEna,
+    /// one request at a time; the first refused write raises and ends the
+    /// call. An attribute left `None` is not written.
+    #[pyo3(signature = (reference, *, go_ena = None, go_id = None, dat_set = None))]
+    fn set_gocb_values<'py>(
+        &self,
+        py: Python<'py>,
+        reference: String,
+        go_ena: Option<bool>,
+        go_id: Option<String>,
+        dat_set: Option<String>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let mut write = RustGoCBValuesWrite::new();
+        if let Some(on) = go_ena {
+            write = write.with_go_ena(on);
+        }
+        if let Some(id) = go_id {
+            write = write.with_go_id(id);
+        }
+        if let Some(ds) = dat_set {
+            write = write.with_dat_set(ds);
+        }
+        let conn = Arc::clone(&self.inner);
+        future_into_py(py, async move {
+            conn.set_gocb_values(&reference, write)
+                .await
+                .map_err(|e| map_client_error(e, ErrCtx::Service))
+        })
+    }
+
     /// Read the vendor, model and revision of the server (MMS Identify).
     ///
     /// Resolves to `{"vendor": str, "model": str, "revision": str,
@@ -2035,6 +2087,29 @@ impl PyIedConnection {
             inner: Arc::new(AsyncMutex::new(handle)),
         })
     }
+}
+
+/// Convert GoCB values into ``{"go_ena", "go_id", "dat_set", "conf_rev",
+/// "nds_com", "dst_address": {"addr": bytes, "priority", "vlan_id",
+/// "app_id"}, "min_time_ms", "max_time_ms", "fixed_offs"}``; the three
+/// optional attributes are ``None`` when the server leaves them out.
+fn gocb_values_to_pydict<'py>(py: Python<'py>, v: &RustGoCBValues) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("go_ena", v.go_ena)?;
+    d.set_item("go_id", &v.go_id)?;
+    d.set_item("dat_set", &v.dat_set)?;
+    d.set_item("conf_rev", v.conf_rev)?;
+    d.set_item("nds_com", v.nds_com)?;
+    let dst = PyDict::new(py);
+    dst.set_item("addr", PyBytes::new(py, &v.dst_address.addr))?;
+    dst.set_item("priority", v.dst_address.priority)?;
+    dst.set_item("vlan_id", v.dst_address.vlan_id)?;
+    dst.set_item("app_id", v.dst_address.app_id)?;
+    d.set_item("dst_address", dst)?;
+    d.set_item("min_time_ms", v.min_time_ms)?;
+    d.set_item("max_time_ms", v.max_time_ms)?;
+    d.set_item("fixed_offs", v.fixed_offs)?;
+    Ok(d)
 }
 
 /// Python token for a `vmdLogicalStatus`; a value outside the named ones reads

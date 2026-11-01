@@ -14,6 +14,7 @@ from ._dataclasses import (
     DataAccessFailure,
     DataSetDirectory,
     DataSetMember,
+    GoCBValues,
     Iec61850ClientConfig,
     IsoConnectionParameters,
     JournalEntry,
@@ -791,6 +792,37 @@ class IedConnection:
 
         task = asyncio.create_task(_loop())
         return ReportDispatcher(task)
+
+    # ─── GOOSE control blocks ─────────────────────────────────────────────
+    async def get_gocb_values(self, gocb_ref: str) -> GoCBValues:
+        """Read every attribute of a GOOSE control block (GetGoCBValues).
+
+        ``gocb_ref`` is ``"<LD>/<LN>.<gcb>"`` or ``"<LD>/<LN>$GO$<gcb>"``.
+        A malformed reference raises ``ValueError`` without sending anything;
+        a block the server does not hold raises ``IedDataAccessError``.
+        """
+        raw = await self._native_conn.get_gocb_values(gocb_ref)
+        return GoCBValues.from_native(raw)
+
+    async def set_gocb_values(
+        self,
+        gocb_ref: str,
+        *,
+        go_ena: bool | None = None,
+        go_id: str | None = None,
+        dat_set: str | None = None,
+    ) -> None:
+        """Write attributes of a GOOSE control block (SetGoCBValues).
+
+        Each attribute given is written, ``dat_set`` first, then ``go_id``,
+        then ``go_ena``, so publishing never starts under the old
+        configuration; the first refused write raises and ends the call. An
+        attribute left ``None`` is not written. A server refuses ``dat_set``
+        and ``go_id`` while the block is enabled.
+        """
+        await self._native_conn.set_gocb_values(
+            gocb_ref, go_ena=go_ena, go_id=go_id, dat_set=dat_set
+        )
 
     # ─── control ──────────────────────────────────────────────────────────
     def create_control_object(

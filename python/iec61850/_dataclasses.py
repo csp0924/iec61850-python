@@ -501,6 +501,69 @@ class JournalQuery:
 
 
 @dataclass(frozen=True, slots=True)
+class PhyComAddress:
+    """``DstAddress`` of a GOOSE control block: the destination of the
+    publication.
+
+    ``addr`` is the 6-byte destination MAC address. ``priority`` (0 to 7)
+    and ``vlan_id`` are the VLAN settings, both 0 when no VLAN is
+    configured; ``app_id`` is the application identifier of the frames.
+    """
+
+    addr: bytes
+    priority: int
+    vlan_id: int
+    app_id: int
+
+    @classmethod
+    def from_native(cls, raw: Mapping[str, Any]) -> "PhyComAddress":
+        return cls(
+            addr=bytes(raw["addr"]),
+            priority=raw["priority"],
+            vlan_id=raw["vlan_id"],
+            app_id=raw["app_id"],
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class GoCBValues:
+    """Attributes of a GOOSE control block, as ``get_gocb_values`` reads them.
+
+    ``go_ena`` tells whether the server publishes the block; ``go_id`` is
+    the GoID of every frame and ``dat_set`` the reference of the published
+    data set; ``conf_rev`` is the configuration revision and ``nds_com``
+    whether the configuration needs commissioning. ``min_time_ms``,
+    ``max_time_ms`` and ``fixed_offs`` are ``None`` when the server leaves
+    those optional attributes out.
+    """
+
+    go_ena: bool
+    go_id: str
+    dat_set: str
+    conf_rev: int
+    nds_com: bool
+    dst_address: PhyComAddress
+    min_time_ms: int | None = None
+    max_time_ms: int | None = None
+    fixed_offs: bool | None = None
+
+    @classmethod
+    def from_native(cls, raw: Mapping[str, Any]) -> "GoCBValues":
+        """Build from the dict ``_native.IedConnection.get_gocb_values`` returns."""
+        return cls(
+            go_ena=raw["go_ena"],
+            go_id=raw["go_id"],
+            dat_set=raw["dat_set"],
+            conf_rev=raw["conf_rev"],
+            nds_com=raw["nds_com"],
+            dst_address=PhyComAddress.from_native(raw["dst_address"]),
+            min_time_ms=raw["min_time_ms"],
+            max_time_ms=raw["max_time_ms"],
+            fixed_offs=raw["fixed_offs"],
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class DataSetMember:
     """Member spec for ``create_data_set()``."""
 

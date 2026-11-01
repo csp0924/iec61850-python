@@ -325,6 +325,20 @@ class IedConnection:
         self, log_ref: str, query: dict[str, Any]
     ) -> Awaitable[list[dict[str, Any]]]: ...
 
+    # GOOSE control blocks
+    # `{"go_ena", "go_id", "dat_set", "conf_rev", "nds_com", "dst_address":
+    # {"addr", "priority", "vlan_id", "app_id"}, "min_time_ms", "max_time_ms",
+    # "fixed_offs"}`.
+    def get_gocb_values(self, reference: str) -> Awaitable[dict[str, Any]]: ...
+    def set_gocb_values(
+        self,
+        reference: str,
+        *,
+        go_ena: bool | None = ...,
+        go_id: str | None = ...,
+        dat_set: str | None = ...,
+    ) -> Awaitable[None]: ...
+
     # Server identification
     # `{"vendor", "model", "revision", "abstract_syntaxes": [dotted OID, ...]}`.
     def get_server_identity(self) -> Awaitable[dict[str, Any]]: ...
