@@ -135,13 +135,13 @@ toolchain. You will need a stable Rust toolchain (edition 2021, MSRV 1.88) and
 [`uv`](https://docs.astral.sh/uv/).
 
 The Rust side is not vendored. `Cargo.toml` takes each crate from the
-implementation repository at a release tag:
+implementation repository at the release tag this version tracks:
 
 ```toml
 iec61850-client = { git = "https://github.com/csp0924/iec61850-rust", tag = "v0.4.0", features = ["tls"] }
 ```
 
-Once that tag exists, a build is just:
+With that tag published, a build is just:
 
 ```bash
 uv sync                       # dev environment, including maturin and pytest
@@ -151,9 +151,9 @@ uv run pytest -q
 
 ### Building against a local checkout
 
-To build against an unreleased `iec61850-rust` — before the tag exists, or while
-changing both repositories together — clone it next to this one so the two share
-a parent directory:
+To build against an unreleased `iec61850-rust` — a tag not yet published, or
+changes made to both repositories together — clone it next to this one so the two
+share a parent directory:
 
 ```
 <parent>/
@@ -176,7 +176,7 @@ iec61850-tls    = { path = "../iec61850-rust/crates/iec61850-tls" }
 ```
 
 A patch redirects a package, but Cargo still loads the git source it is
-patching before applying the patch. So while the tag does not exist yet, that
+patching before applying the patch. So while the tag is not published, that
 config alone is not enough — resolution fails with:
 
 ```
@@ -211,8 +211,8 @@ offline and reports the patched packages coming from
 against your working tree — edits on the Rust side are picked up without a
 commit.
 
-Once `v0.4.0` is tagged, delete `.cargo/config.toml` and `Cargo.lock` and build
-normally; none of this is needed any more.
+Once the tag `Cargo.toml` names is published, delete `.cargo/config.toml` and
+`Cargo.lock` and build normally; none of this is needed any more.
 
 ## Conformance (PICS)
 
