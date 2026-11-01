@@ -612,6 +612,69 @@ async def test_setting_group_value_of_an_ld_without_sgcb_raises() -> None:
             server.get_setting_group_value("GenericIO/GGIO1.Ind1.stVal", 1)
 
 
+SG_EDIT_SG = "IED1GenericIO/LLN0.SGCB.EditSG"
+SG_CNF_EDIT = "IED1GenericIO/LLN0.SGCB.CnfEdit"
+
+
+async def _edit_and_confirm(
+    on_confirm: object,
+) -> tuple[IedDataAccessError | None, object, dict]:
+    """Stage 222 in group 2 and confirm it with `on_confirm` installed.
+
+    Returns the error the confirmation raised, if any, the value group 2
+    holds afterwards, and the SGCB snapshot.
+    """
+    text = SG_SCL.replace('fc="SG" bType="INT32"', 'fc="SE" bType="INT32"')
+    server = IedServer.from_scl_str(text, ied_name="IED1")
+    server.bind("127.0.0.1:0")
+    server.register_setting_group_handler("GenericIO", on_confirm=on_confirm)
+    async with server:
+        conn = await IedConnection.connect(server.bound_addr)
+        try:
+            await conn.write(SG_EDIT_SG, FC.SP, {"type": "uint", "value": 2})
+            await conn.write(SG_SETTING_REF, FC.SE, 222)
+            error = None
+            try:
+                await conn.write(SG_CNF_EDIT, FC.SP, True)
+            except IedDataAccessError as exc:
+                error = exc
+            return (
+                error,
+                server.get_setting_group_value(SG_SETTING, 2),
+                server.get_setting_group_info("GenericIO"),
+            )
+        finally:
+            await conn.disconnect()
+
+
+@pytest.mark.parametrize("answer", [None, True])
+async def test_on_confirm_accepting_commits_the_edit(answer: object) -> None:
+    error, value, info = await _edit_and_confirm(lambda _sg, _conn: answer)
+    assert error is None
+    assert value == 222
+    assert info["edit_sg"] == 0
+
+
+@pytest.mark.parametrize("answer", [False, 1])
+async def test_on_confirm_refusing_keeps_the_group(answer: object) -> None:
+    error, value, info = await _edit_and_confirm(lambda _sg, _conn: answer)
+    assert error is not None
+    assert error.code == 3
+    assert value == 20
+    assert info["edit_sg"] == 2
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnraisableExceptionWarning")
+async def test_on_confirm_raising_refuses_the_edit() -> None:
+    def on_confirm(_sg: int, _conn: int) -> None:
+        raise RuntimeError("storage unavailable")
+
+    error, value, _info = await _edit_and_confirm(on_confirm)
+    assert error is not None
+    assert error.code == 3
+    assert value == 20
+
+
 # ── write access policy ─────────────────────────────────────────────────────
 
 CFG_REF = f"{_demo.WRITABLE_DOMAIN}/GGIO1.Cfg.setVal"

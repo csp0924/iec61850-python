@@ -4876,12 +4876,14 @@ impl RustWriteHandler for PyWriteHandler {
 /// Each callable is independently optional; an unset slot falls back to
 /// the default `allow` / no-op behavior. Callback signatures:
 ///
-/// - `on_act_sg(new_sg: int, conn_id: int) -> bool` — return `False` to
-///   reject (`ObjectAccessDenied`).
-/// - `on_edit_sg(new_sg: int, conn_id: int) -> bool` — same veto contract;
-///   `new_sg == 0` means client-side cancel.
-/// - `on_confirm(edit_sg: int, conn_id: int) -> None` — notification only,
-///   no veto.
+/// - `on_act_sg(new_sg: int, conn_id: int) -> bool | None`
+/// - `on_edit_sg(new_sg: int, conn_id: int) -> bool | None`, where
+///   `new_sg == 0` means client-side cancel
+/// - `on_confirm(edit_sg: int, conn_id: int) -> bool | None`
+///
+/// All three share one contract: `None` or `True` accepts; `False`, any
+/// other return value, or a raised exception refuses the request with
+/// `ObjectAccessDenied`.
 struct PySettingGroupHandler {
     on_act_sg: Option<Py<PyAny>>,
     on_edit_sg: Option<Py<PyAny>>,
@@ -4911,9 +4913,7 @@ fn sgcb_bool_callback(cb: Option<&Py<PyAny>>, new_value: u8, conn_id: RustConnec
                 if result.is_none() {
                     true
                 } else {
-                    // Non-bool returns are treated as veto so the application
-                    // gets a clear `ObjectAccessDenied` rather than a silent
-                    // accept; the surfaced Python warning is enough to diagnose.
+                    // a return value other than None or a bool refuses
                     result.extract::<bool>().unwrap_or(false)
                 }
             }
@@ -7513,15 +7513,20 @@ impl PyIedServer {
     /// `ld_inst` selects the LD whose LLN0 declares the SGCB (one SGCB per
     /// LD per IEC 61850). All three callbacks are independently optional:
     ///
-    /// - ``on_act_sg(new_sg: int, conn_id: int) -> bool`` — invoked on client
-    ///   ``SelectActiveSG``; return ``False`` to reject with
-    ///   ``ObjectAccessDenied``. Default: allow.
-    /// - ``on_edit_sg(new_sg: int, conn_id: int) -> bool`` — invoked on
-    ///   ``EditSG``; ``new_sg == 0`` is the cancel form. Default: allow.
-    /// - ``on_confirm(edit_sg: int, conn_id: int) -> None`` — fired after
-    ///   ``ConfirmEditSG`` passes all server-side guards, immediately before
-    ///   the edit session is cleared. The application should persist any
-    ///   staged FC=SE values here. No veto.
+    /// - ``on_act_sg(new_sg: int, conn_id: int) -> bool | None`` — invoked
+    ///   on client ``SelectActiveSG``. Default: allow.
+    /// - ``on_edit_sg(new_sg: int, conn_id: int) -> bool | None`` — invoked
+    ///   on ``EditSG``; ``new_sg == 0`` is the cancel form. Default: allow.
+    /// - ``on_confirm(edit_sg: int, conn_id: int) -> bool | None`` — invoked
+    ///   on ``ConfirmEditSGValues`` once it passes all server-side guards,
+    ///   before the staged FC=SE values are committed to the group. The
+    ///   application can persist the staged values here. Default: allow.
+    ///
+    /// Each callback accepts by returning ``None`` or ``True``. Returning
+    /// ``False``, returning any other value, or raising refuses the request
+    /// with ``ObjectAccessDenied``; a refused confirmation commits nothing
+    /// and leaves the edit session open. An exception is reported through
+    /// ``sys.unraisablehook``.
     ///
     /// The callbacks are queued at NotStarted and bound to the registry at
     /// `start()`. Calling at runtime is also supported and replaces any

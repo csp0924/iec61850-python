@@ -539,9 +539,9 @@ class IedServer:
         self,
         ld_inst: str,
         *,
-        on_act_sg: Callable[..., Any] | None = ...,
-        on_edit_sg: Callable[..., Any] | None = ...,
-        on_confirm: Callable[..., Any] | None = ...,
+        on_act_sg: Callable[[int, int], bool | None] | None = ...,
+        on_edit_sg: Callable[[int, int], bool | None] | None = ...,
+        on_confirm: Callable[[int, int], bool | None] | None = ...,
     ) -> None: ...
     def get_setting_group_info(self, ld_inst: str) -> dict[str, Any]: ...
     def force_active_setting_group(self, ld_inst: str, sg: int) -> None: ...
