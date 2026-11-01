@@ -226,3 +226,18 @@ async def test_a_gocb_without_gse_addressing_is_registered_disabled() -> None:
             assert (await conn.get_gocb_values(GOCB_IEC)).go_ena is False
         finally:
             await conn.disconnect()
+
+
+async def test_one_call_disables_the_block_and_changes_its_data_set() -> None:
+    """``go_ena=False`` is written before ``dat_set``, so an enabled block is
+    stopped and reconfigured by a single call."""
+    async with _gocb_server() as server:
+        conn = await IedConnection.connect(server.bound_addr)
+        try:
+            await conn.set_gocb_values(GOCB_IEC, go_ena=True)
+            await conn.set_gocb_values(GOCB_IEC, go_ena=False, dat_set=DS_MEAS_REF)
+            values = await conn.get_gocb_values(GOCB_IEC)
+        finally:
+            await conn.disconnect()
+    assert values.go_ena is False
+    assert values.dat_set == DS_MEAS_REF

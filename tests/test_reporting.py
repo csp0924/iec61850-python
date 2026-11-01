@@ -163,3 +163,21 @@ async def test_report_dispatcher_keeps_the_error_that_ended_it() -> None:
             await conn.abort()
         except iec61850.IedError:
             pass
+
+
+async def test_a_gi_mask_writes_the_gi_the_handle_holds(demo_server: str) -> None:
+    """A mask naming GI writes the handle's GI: left False it writes False,
+    which a disabled URCB accepts; set True it requests an interrogation,
+    which a disabled URCB refuses with temporarily-unavailable."""
+    conn = await iec61850.IedConnection.connect(demo_server)
+    try:
+        rcb = await conn.get_rcb_values(RCB_REF)
+        assert rcb.rpt_ena is False
+        rcb.gi = False
+        await conn.set_rcb_values(rcb, iec61850.RcbWriteMask.fields("gi"))
+        rcb.gi = True
+        with pytest.raises(iec61850.IedDataAccessError) as info:
+            await conn.set_rcb_values(rcb, iec61850.RcbWriteMask.fields("gi"))
+        assert info.value.code == 2  # temporarily-unavailable
+    finally:
+        await conn.disconnect()

@@ -193,6 +193,9 @@ class RcbHandle:
 
     @property
     def gi(self) -> bool:
+        """GI as read, and the value ``set_rcb_values`` writes when its mask
+        names ``gi``: set it to ``True`` to request a general interrogation;
+        a mask naming ``gi`` on a handle left ``False`` writes ``False``."""
         return self._native.gi
 
     @gi.setter
@@ -831,11 +834,14 @@ class IedConnection:
     ) -> None:
         """Write attributes of a GOOSE control block (SetGoCBValues).
 
-        Each attribute given is written, ``dat_set`` first, then ``go_id``,
-        then ``go_ena``, so publishing never starts under the old
-        configuration; the first refused write raises and ends the call. An
-        attribute left ``None`` is not written. A server refuses ``dat_set``
-        and ``go_id`` while the block is enabled.
+        Each attribute given is written one request at a time; the first
+        refused write raises and ends the call, and an attribute left
+        ``None`` is not written. ``go_ena=False`` is written first, then
+        ``dat_set``, then ``go_id``, so one call can stop publishing and
+        change the configuration. Otherwise ``dat_set`` and ``go_id`` come
+        first and ``go_ena`` last, so publishing never starts under the old
+        configuration. A server refuses ``dat_set`` and ``go_id`` while the
+        block is enabled, and one presenting Edition 2.1 always.
         """
         await self._native_conn.set_gocb_values(
             gocb_ref, go_ena=go_ena, go_id=go_id, dat_set=dat_set

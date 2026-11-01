@@ -2074,9 +2074,11 @@ impl PyIedConnection {
 
     /// Write attributes of a GOOSE control block (ACSI SetGoCBValues).
     ///
-    /// Each attribute given is written, DatSet first, then GoID, then GoEna,
-    /// one request at a time; the first refused write raises and ends the
-    /// call. An attribute left `None` is not written.
+    /// Each attribute given is written one request at a time; the first
+    /// refused write raises and ends the call, and an attribute left `None`
+    /// is not written. `go_ena=False` is written first, then DatSet, then
+    /// GoID, so one call can stop publishing and change the configuration;
+    /// otherwise DatSet and GoID come first and GoEna last.
     #[pyo3(signature = (reference, *, go_ena = None, go_id = None, dat_set = None))]
     fn set_gocb_values<'py>(
         &self,
