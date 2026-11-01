@@ -1700,6 +1700,221 @@ request, connect or command-termination timeout is not caught by
 
 ## Release notes
 
+### 0.16.0
+
+Tracks iec61850-rust v0.4.0.
+
+#### Breaking changes
+
+- `TlsConfig`, `IedConnection.connect_tls` and `IedServer.with_tls` lose
+  `chain_validation`: the certificate chain is always validated. Drop the
+  argument.
+
+  ```python
+  # 0.15
+  tls = iec61850.TlsConfig(ca_pem=ca, chain_validation=True)
+  # 0.16
+  tls = iec61850.TlsConfig(ca_pem=ca)
+  ```
+
+- `ControlObjectClient.select()` returns a `ControlOutcome` instead of a
+  `bool`. An outcome is truthy exactly when it succeeded, so
+  `if await ctl.select():` keeps working; compare `.success` where the code
+  tested identity.
+
+  ```python
+  # 0.15
+  assert await ctl.select() is True
+  # 0.16
+  assert (await ctl.select()).success
+  ```
+
+- The `action` dict passed to `on_control` callbacks carries `t` (the
+  request timestamp as eight UTC_TIME octets) and `conn_id` instead of
+  `ctl_time_ms`.
+
+  ```python
+  # 0.15
+  when_ms = action["ctl_time_ms"]
+  # 0.16
+  t_octets, conn = action["t"], action["conn_id"]
+  ```
+
+- `IedTimeoutError` no longer derives from `IedServiceError`; catch it on
+  its own.
+
+  ```python
+  # 0.15
+  except iec61850.IedServiceError: ...      # also caught timeouts
+  # 0.16
+  except (iec61850.IedServiceError, iec61850.IedTimeoutError): ...
+  ```
+
+- The data sets, report, GOOSE and log control blocks and control objects a
+  model declares are served only once registered. Call
+  `register_from_model()`, or keep the explicit `add_dataset` /
+  `register_*` / `on_control` calls. A report control block registered from
+  the model is named per instance, `<name>01` when indexed.
+
+  ```python
+  # 0.15
+  server = iec61850.IedServer.from_scl("plant.cid", ied_name="IED1")
+  # 0.16
+  server = iec61850.IedServer.from_scl("plant.cid", ied_name="IED1")
+  server.register_from_model()
+  ```
+
+- A journal is named by the `LogRef` of its log control block, not by the
+  control block reference.
+
+  ```python
+  # 0.15
+  await conn.query_journal_by_time("IED1LD0/LLN0$LG$lcb01", t0, t1)
+  # 0.16
+  await conn.query_journal_by_time("IED1LD0/LLN0$EventLog", t0, t1)
+  ```
+
+- A hosted server writes the journal itself for every member of an LCB's
+  data set (data change, quality change, data update and integrity, as the
+  block's `TrgOps` select). Stop calling `log_value` for those members, or
+  each change is logged twice; register the data set so the block can
+  record it.
+
+  ```python
+  # 0.15
+  server.update_bool("LD0/GGIO1.Ind1.stVal", True)
+  server.log_value("LD0/LLN0.lcb01", data_ref=ref, value=True)
+  # 0.16
+  server.add_dataset("LLN0$dsStatus", ["LD0/GGIO1.Ind1.stVal"])
+  ...
+  server.update_bool("LD0/GGIO1.Ind1.stVal", True)    # logged
+  ```
+
+- Under the normal-security control models a failing `operate` callback is
+  no longer reported to the client. Refuse the command from `check` or
+  `wait`.
+
+  ```python
+  # 0.15
+  server.on_control(path, ctl_model="direct-normal", operate=refuse_if_blocked)
+  # 0.16
+  server.on_control(path, ctl_model="direct-normal",
+                    check=refuse_if_blocked, operate=operate)
+  ```
+
+- A `ctlModel`, `sboTimeout`, `sboClass` or `operTimeout` the model declares
+  takes precedence over the arguments of `on_control`. Declare the control
+  model in the SCL.
+
+  ```xml
+  <!-- 0.15: on_control(..., ctl_model="sbo-normal") overrode this -->
+  <DAI name="ctlModel"><Val>direct-with-normal-security</Val></DAI>
+  <!-- 0.16 -->
+  <DAI name="ctlModel"><Val>sbo-with-normal-security</Val></DAI>
+  ```
+
+- An attribute reports only the trigger options it declares. Declare
+  `dchg` (or `qchg`, `dupd`) on an SCL attribute that should report, and
+  give a model-spec attribute that should report a `trg_ops` list; one
+  without it raises none.
+
+  ```xml
+  <!-- 0.15 -->
+  <DA name="stVal" fc="ST" bType="BOOLEAN"/>
+  <!-- 0.16 -->
+  <DA name="stVal" fc="ST" bType="BOOLEAN" dchg="true"/>
+  ```
+
+- `max_outstanding` is limited to 65535.
+
+#### Added
+
+- `IedConnection.get_server_identity()` (MMS Identify) returns a
+  `ServerIdentity`; `get_server_status(extended_derivation=False)` (MMS
+  Status) returns a `ServerStatus`.
+- `JournalQuery` and `IedConnection.query_journal(log_ref, query)`, one
+  ReadJournal request with any selection, and `query_journal_all`, which
+  follows `more_follows` and returns each entry once.
+- `max_name_list_names` on `connect`, `connect_tls` and
+  `Iec61850ClientConfig` caps the names one directory walk collects.
+- `ClientReport.included`, `sub_seq_num` and `more_segments_follow`.
+- `IedConnection.get_gocb_values` and `set_gocb_values`, with the
+  `GoCBValues` and `PhyComAddress` dataclasses.
+- `ControlOutcome.last_appl_error` and the `LastApplError` dataclass;
+  `ControlAddCause.BLOCKED_BY_COMMAND` (`"blocked-by-command"`), with
+  `ABORTION_BY_COMMAND` kept as an alias and its token still parsed.
+- `IedTlsError`, a subclass of `IedConnectionError`, for a failed TLS
+  handshake, with `kind` and `message`. `IedConnectionError`,
+  `IedServiceError`, `IedTimeoutError`, `IedDataAccessError` and
+  `IedServerError` carry attributes naming the cause (see
+  [Error handling](#error-handling)).
+- `IedServer.register_from_model()`, `update_array(path, values)`,
+  `set_edition(edition)`, `get_setting_group_value(path, group)`,
+  `set_setting_group_value(path, group, value)`,
+  `set_write_access_policy(fc, allow)`, `write_access_allowed(fc)`,
+  `abort_all_connections()` and `dynamic_dataset_count()`.
+- `on_read` and `on_write` take `with_context=True` to receive the request
+  context (`path`, `fc`, `conn_id`, `requested`).
+- `on_control` takes `oper_timeout_ms`.
+- Raw SCL type dictionaries carry `count` and `count_ref` for DA, BDA and
+  SDO declarations.
+
+#### Changed behavior (from iec61850-rust 0.4.0)
+
+- Reports: a report larger than the negotiated PDU size arrives in
+  segments, each delivered separately; a report carries only the reasons
+  its control block's `TrgOps` enable; rewriting a value with itself sends
+  no data change; the sub-attributes of a constructed attribute take its
+  trigger options, so `mag.f` triggers on what `mag` declares; a value a
+  client writes raises the triggers its attribute declares.
+- `batch()` raises the triggers of its updates as one batch on exit (one
+  report without a buffer time, one log entry per log control block);
+  periodic reports wait for it, and client reads are not held back.
+- Logging: data update and integrity are recorded as well as data and
+  quality change; general interrogation writes no entry.
+- Report control blocks: `DatSet` reads back as `"<LD>/<LN>$<name>"`;
+  enabling an unreserved URCB reserves it and disabling keeps the
+  reservation until `resv=False`; writing any other attribute of an
+  unreserved URCB does not reserve it; `gi=True` on a disabled block, and
+  configuration, `purge_buf` and `entry_id` writes on an enabled BRCB,
+  fail with `TemporarilyUnavailable`; `conf_rev` counts `DatSet` changes
+  only; the first report after every BRCB enable carries `BufOvfl`; a
+  full report channel no longer clears `RptEna` or `Resv`.
+- `Owner` and `ResvTms` of an SCL-built control block exist only when its
+  `<ReportSettings>` declares `owner="true"` / `resvTms="true"`; an SCL
+  `<TrgOps>` that omits `gi` now enables it.
+- Setting groups: the server holds the values of every group and
+  SelectActiveSG loads them into FC=SG; reading or writing FC=SE outside an
+  edit session answers `TemporarilyUnavailable`.
+- Control: an `Oper` with an `operTm` is refused with `NotSupported`; a
+  second select of a selected object fails; cancelling an idle direct
+  control fails; a selection ends on its own `sboTimeout`; the server
+  maintains `stSeld`; a refused operate reports the add cause the server
+  sends instead of `unknown`.
+- Arrays: an attribute or sub-data object declared with `count` is an MMS
+  array whose elements a client reads and writes by index; a read handler
+  on an array returns a list of the element count.
+- Writes: a whole data object can be written; an integer out of range
+  answers `ObjectValueInvalid` and a string or octet string of a wrong
+  length `TypeInconsistent`; a Quality written with fewer bits reads back
+  with 13.
+- Read and write handlers are asked for reads and writes above and below
+  their own path, and for data set reads; a handler on a data object or
+  constructed attribute answers in model order.
+- Data sets: CreateDataSet takes data objects, constructed attributes and
+  array elements as members, up to 1024 members and 4096 attributes, and a
+  Write up to 4096 items; beyond, the error is resource
+  capability-unavailable instead of access other. GetDataSetDirectory
+  lists an array element member as the array with an alternate access.
+- GI and integrity reports read a data object or constructed attribute
+  written concurrently whole or not at all.
+- A GoCB `DatSet` reads as `"<LD>/LLN0$<name>"`.
+- A client refused at Initiate or authentication raises
+  `IedSessionRefusedError`; a client refused by TLS gets the alert reason.
+- Directory walks keep the server's order without duplicates, and SCL
+  errors start with `"SCL error at"`; data object members follow the DOType
+  declaration order.
+
 ### 0.15.2
 
 Tracks iec61850-rust v0.3.2. No API changes; the entries below are what a
