@@ -103,7 +103,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList, PyString, PyTuple, PyType};
 use pyo3_async_runtimes::tokio::future_into_py;
 use pyo3_async_runtimes::TaskLocals;
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::{RwLock as AsyncRwLock, RwLockReadGuard as AsyncRwLockReadGuard};
 
 create_exception!(
     _native,
@@ -1733,12 +1733,15 @@ impl PyIedConnection {
                 .await
                 .map_err(|e| map_client_error(e, ErrCtx::Service))?;
             Ok(PyRcbHandle {
-                inner: Arc::new(AsyncMutex::new(handle)),
+                inner: Arc::new(std::sync::Mutex::new(handle)),
             })
         })
     }
 
     /// Re-read the same RCB and update fields on the existing handle in place.
+    ///
+    /// The handle stays readable while the request is in flight; its fields
+    /// are replaced once the response arrives.
     fn refresh_rcb_values<'py>(
         &self,
         py: Python<'py>,
@@ -1747,10 +1750,12 @@ impl PyIedConnection {
         let conn = Arc::clone(&self.inner);
         let handle = Arc::clone(&rcb.inner);
         future_into_py(py, async move {
-            let mut guard = handle.lock().await;
-            conn.refresh_rcb_values(&mut guard)
+            let mut snapshot = handle.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            conn.refresh_rcb_values(&mut snapshot)
                 .await
-                .map_err(|e| map_client_error(e, ErrCtx::Service))
+                .map_err(|e| map_client_error(e, ErrCtx::Service))?;
+            *handle.lock().unwrap_or_else(|e| e.into_inner()) = snapshot;
+            Ok(())
         })
     }
 
@@ -1758,7 +1763,9 @@ impl PyIedConnection {
     ///
     /// `mask_bits` is a raw `RcbWriteMask` bit-set (see
     /// `iec61850.RcbWriteMask`). Read-only fields (conf_rev / sq_num /
-    /// owner / entry_time) are filtered server-side.
+    /// owner / entry_time) are filtered server-side. The fields are taken
+    /// from the handle when the call is made; changing the handle while the
+    /// request is in flight does not affect what is sent.
     fn set_rcb_values<'py>(
         &self,
         py: Python<'py>,
@@ -1770,8 +1777,8 @@ impl PyIedConnection {
         let handle = Arc::clone(&rcb.inner);
         let mask = RustRcbWriteMask::from_bits_truncate(mask_bits);
         future_into_py(py, async move {
-            let guard = handle.lock().await;
-            conn.set_rcb_values(&guard, mask, single_request)
+            let snapshot = handle.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            conn.set_rcb_values(&snapshot, mask, single_request)
                 .await
                 .map_err(|e| map_client_error(e, ErrCtx::Service))
         })
@@ -2084,7 +2091,11 @@ impl PyIedConnection {
             .create_control_object(&object_ref, model)
             .map_err(|e| map_client_error(e, ErrCtx::Service))?;
         Ok(PyControlObjectClient {
-            inner: Arc::new(AsyncMutex::new(handle)),
+            object_reference: handle.object_ref().to_string(),
+            domain: handle.domain().to_string(),
+            ctl_model: handle.ctl_model(),
+            inner: Arc::new(AsyncRwLock::new(handle)),
+            pending: Arc::new(std::sync::Mutex::new(PendingControlSettings::default())),
         })
     }
 }
@@ -2142,9 +2153,83 @@ fn physical_status_token(status: iec61850_client::VmdPhysicalStatus) -> &'static
 
 /// Client handle for a single controllable DO. Built via
 /// ``IedConnection.create_control_object()``.
+///
+/// The identity getters read values captured at construction, and the
+/// setters record the new setting without touching the shared handle; the
+/// recorded settings are applied when the next `select` / `select_with_value`
+/// / `operate` / `cancel` starts. No method holds a lock the asyncio loop
+/// could wait on while a command is in flight.
 #[pyclass(name = "ControlObjectClient", module = "iec61850._native", frozen)]
 struct PyControlObjectClient {
-    inner: Arc<AsyncMutex<RustControlObjectClient>>,
+    object_reference: String,
+    domain: String,
+    ctl_model: RustControlModel,
+    inner: Arc<AsyncRwLock<RustControlObjectClient>>,
+    pending: Arc<std::sync::Mutex<PendingControlSettings>>,
+}
+
+/// Settings recorded by the `ControlObjectClient` setters and applied to the
+/// shared handle when the next command starts.
+#[derive(Default)]
+struct PendingControlSettings {
+    origin: Option<RustOriginValue>,
+    sbo_class: Option<RustSboClass>,
+    ctl_num: Option<u8>,
+    test: Option<bool>,
+    synchro_check: Option<bool>,
+    interlock_check: Option<bool>,
+}
+
+impl PendingControlSettings {
+    fn needs_exclusive(&self) -> bool {
+        self.origin.is_some() || self.sbo_class.is_some()
+    }
+
+    fn apply_shared(&self, client: &RustControlObjectClient) {
+        if let Some(n) = self.ctl_num {
+            client.set_ctl_num(n);
+        }
+        if let Some(on) = self.test {
+            client.set_test(on);
+        }
+        if let Some(on) = self.synchro_check {
+            client.set_synchro_check(on);
+        }
+        if let Some(on) = self.interlock_check {
+            client.set_interlock_check(on);
+        }
+    }
+}
+
+/// Applies the recorded settings and returns a shared guard to issue one
+/// command with. An exclusive lock is taken only while a new origin or SBO
+/// class is installed, and is downgraded before the command is sent.
+async fn control_handle_for_command<'a>(
+    inner: &'a Arc<AsyncRwLock<RustControlObjectClient>>,
+    pending: &std::sync::Mutex<PendingControlSettings>,
+) -> AsyncRwLockReadGuard<'a, RustControlObjectClient> {
+    let settings = std::mem::take(&mut *pending.lock().unwrap_or_else(|e| e.into_inner()));
+    if settings.needs_exclusive() {
+        let mut guard = inner.write().await;
+        if let Some(origin) = settings.origin.clone() {
+            guard.set_origin(origin);
+        }
+        if let Some(cls) = settings.sbo_class {
+            guard.set_sbo_class(cls);
+        }
+        settings.apply_shared(&guard);
+        guard.downgrade()
+    } else {
+        let guard = inner.read().await;
+        settings.apply_shared(&guard);
+        guard
+    }
+}
+
+impl PyControlObjectClient {
+    fn record(&self, f: impl FnOnce(&mut PendingControlSettings)) {
+        f(&mut self.pending.lock().unwrap_or_else(|e| e.into_inner()));
+    }
 }
 
 #[pymethods]
@@ -2152,55 +2237,54 @@ impl PyControlObjectClient {
     /// IEC-style object reference (`"<LD>/<LN>.<DO>"`).
     #[getter]
     fn object_reference(&self) -> String {
-        self.inner.blocking_lock().object_ref().to_string()
+        self.object_reference.clone()
     }
 
     /// MMS domain segment (`"<LD>"`).
     #[getter]
     fn domain(&self) -> String {
-        self.inner.blocking_lock().domain().to_string()
+        self.domain.clone()
     }
 
     /// Current control model as wire token.
     #[getter]
     fn ctl_model(&self) -> &'static str {
-        ctl_model_token(self.inner.blocking_lock().ctl_model())
+        ctl_model_token(self.ctl_model)
     }
 
-    /// Override the origin (`orCat` + `orIdent`). The Python ``OriginValue``
-    /// dataclass enforces the field-range invariants; values are taken on
-    /// trust here.
+    /// Override the origin (`orCat` + `orIdent`) for the following commands.
+    /// The Python ``OriginValue`` dataclass enforces the field-range
+    /// invariants; values are taken on trust here.
     fn set_origin(&self, or_cat: i32, or_ident: Vec<u8>) {
-        self.inner
-            .blocking_lock()
-            .set_origin(RustOriginValue { or_cat, or_ident });
+        self.record(|p| p.origin = Some(RustOriginValue { or_cat, or_ident }));
     }
 
-    /// Force `ctlNum` (mostly for sbo-enhanced where Oper must reuse the
-    /// SBOw value).
+    /// Force `ctlNum` for the next command (mostly for sbo-enhanced where
+    /// Oper must reuse the SBOw value).
     fn set_ctl_num(&self, ctl_num: u8) {
-        self.inner.blocking_lock().set_ctl_num(ctl_num);
+        self.record(|p| p.ctl_num = Some(ctl_num));
     }
 
-    /// Set the `Test` flag for the next operate / select / cancel.
+    /// Set the `Test` flag for the following operate / select / cancel.
     fn set_test(&self, on: bool) {
-        self.inner.blocking_lock().set_test(on);
+        self.record(|p| p.test = Some(on));
     }
 
-    /// Set the `synchroCheck` flag.
+    /// Set the `synchroCheck` flag for the following commands.
     fn set_synchro_check(&self, on: bool) {
-        self.inner.blocking_lock().set_synchro_check(on);
+        self.record(|p| p.synchro_check = Some(on));
     }
 
-    /// Set the `interlockCheck` flag.
+    /// Set the `interlockCheck` flag for the following commands.
     fn set_interlock_check(&self, on: bool) {
-        self.inner.blocking_lock().set_interlock_check(on);
+        self.record(|p| p.interlock_check = Some(on));
     }
 
-    /// Set the SBO class (`"operate-once"` or `"operate-many"`).
+    /// Set the SBO class (`"operate-once"` or `"operate-many"`) for the
+    /// following commands.
     fn set_sbo_class(&self, sbo_class: String) -> PyResult<()> {
         let cls = parse_sbo_class(&sbo_class)?;
-        self.inner.blocking_lock().set_sbo_class(cls);
+        self.record(|p| p.sbo_class = Some(cls));
         Ok(())
     }
 
@@ -2209,9 +2293,10 @@ impl PyControlObjectClient {
     /// Resolves to the outcome mapping described on `operate`.
     fn select<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let handle = Arc::clone(&self.inner);
+        let pending = Arc::clone(&self.pending);
         future_into_py(py, async move {
-            let guard = handle.lock().await;
-            let outcome = guard
+            let client = control_handle_for_command(&handle, &pending).await;
+            let outcome = client
                 .select()
                 .await
                 .map_err(|e| map_client_error(e, ErrCtx::Service))?;
@@ -2228,10 +2313,11 @@ impl PyControlObjectClient {
         value: Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = Arc::clone(&self.inner);
+        let pending = Arc::clone(&self.pending);
         let mms = py_value_to_mms_value(&value)?;
         future_into_py(py, async move {
-            let guard = handle.lock().await;
-            let outcome = guard
+            let client = control_handle_for_command(&handle, &pending).await;
+            let outcome = client
                 .select_with_value(mms)
                 .await
                 .map_err(|e| map_client_error(e, ErrCtx::Service))?;
@@ -2252,10 +2338,11 @@ impl PyControlObjectClient {
         value: Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = Arc::clone(&self.inner);
+        let pending = Arc::clone(&self.pending);
         let mms = py_value_to_mms_value(&value)?;
         future_into_py(py, async move {
-            let guard = handle.lock().await;
-            let outcome = guard
+            let client = control_handle_for_command(&handle, &pending).await;
+            let outcome = client
                 .operate(mms)
                 .await
                 .map_err(|e| map_client_error(e, ErrCtx::Service))?;
@@ -2270,10 +2357,11 @@ impl PyControlObjectClient {
         value: Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = Arc::clone(&self.inner);
+        let pending = Arc::clone(&self.pending);
         let mms = py_value_to_mms_value(&value)?;
         future_into_py(py, async move {
-            let guard = handle.lock().await;
-            let outcome = guard
+            let client = control_handle_for_command(&handle, &pending).await;
+            let outcome = client
                 .cancel(mms)
                 .await
                 .map_err(|e| map_client_error(e, ErrCtx::Service))?;
@@ -2620,180 +2708,176 @@ fn py_value_to_mms_value(value: &Bound<'_, PyAny>) -> PyResult<RustMmsValue> {
 /// expose getters only.
 #[pyclass(name = "RcbHandle", module = "iec61850._native", frozen)]
 struct PyRcbHandle {
-    inner: Arc<AsyncMutex<RustRcbHandle>>,
+    inner: Arc<std::sync::Mutex<RustRcbHandle>>,
+}
+
+impl PyRcbHandle {
+    fn local(&self) -> std::sync::MutexGuard<'_, RustRcbHandle> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
 }
 
 #[pymethods]
 impl PyRcbHandle {
     #[getter]
     fn object_reference(&self) -> String {
-        self.inner.blocking_lock().object_reference().to_string()
+        self.local().object_reference().to_string()
     }
 
     #[getter]
     fn is_buffered(&self) -> bool {
-        self.inner.blocking_lock().is_buffered()
+        self.local().is_buffered()
     }
 
     #[getter]
     fn rpt_id(&self) -> Option<String> {
-        self.inner.blocking_lock().rpt_id().map(str::to_string)
+        self.local().rpt_id().map(str::to_string)
     }
 
     #[setter]
     fn set_rpt_id(&self, value: String) {
-        self.inner.blocking_lock().set_rpt_id(&value);
+        self.local().set_rpt_id(&value);
     }
 
     #[getter]
     fn rpt_ena(&self) -> bool {
-        self.inner.blocking_lock().rpt_ena()
+        self.local().rpt_ena()
     }
 
     #[setter]
     fn set_rpt_ena(&self, value: bool) {
-        self.inner.blocking_lock().set_rpt_ena(value);
+        self.local().set_rpt_ena(value);
     }
 
     #[getter]
     fn resv(&self) -> bool {
-        self.inner.blocking_lock().resv()
+        self.local().resv()
     }
 
     #[setter]
     fn set_resv(&self, value: bool) {
-        self.inner.blocking_lock().set_resv(value);
+        self.local().set_resv(value);
     }
 
     #[getter]
     fn data_set_reference(&self) -> Option<String> {
-        self.inner
-            .blocking_lock()
-            .data_set_reference()
-            .map(str::to_string)
+        self.local().data_set_reference().map(str::to_string)
     }
 
     #[setter]
     fn set_data_set_reference(&self, value: String) {
-        self.inner.blocking_lock().set_data_set_reference(&value);
+        self.local().set_data_set_reference(&value);
     }
 
     #[getter]
     fn opt_flds_bits(&self) -> u16 {
-        self.inner.blocking_lock().opt_flds().bits()
+        self.local().opt_flds().bits()
     }
 
     #[setter]
     fn set_opt_flds_bits(&self, value: u16) {
         let v = RustReportOptFlds::from_bits_truncate(value);
-        self.inner.blocking_lock().set_opt_flds(v);
+        self.local().set_opt_flds(v);
     }
 
     #[getter]
     fn buf_tm_ms(&self) -> u32 {
-        self.inner.blocking_lock().buf_tm_ms()
+        self.local().buf_tm_ms()
     }
 
     #[setter]
     fn set_buf_tm_ms(&self, value: u32) {
-        self.inner.blocking_lock().set_buf_tm_ms(value);
+        self.local().set_buf_tm_ms(value);
     }
 
     #[getter]
     fn trg_ops_bits(&self) -> u8 {
-        self.inner.blocking_lock().trg_ops().bits()
+        self.local().trg_ops().bits()
     }
 
     #[setter]
     fn set_trg_ops_bits(&self, value: u8) {
         let v = RustTriggerOptions::from_bits_truncate(value);
-        self.inner.blocking_lock().set_trg_ops(v);
+        self.local().set_trg_ops(v);
     }
 
     #[getter]
     fn intg_pd_ms(&self) -> u32 {
-        self.inner.blocking_lock().intg_pd_ms()
+        self.local().intg_pd_ms()
     }
 
     #[setter]
     fn set_intg_pd_ms(&self, value: u32) {
-        self.inner.blocking_lock().set_intg_pd_ms(value);
+        self.local().set_intg_pd_ms(value);
     }
 
     #[getter]
     fn gi(&self) -> bool {
-        self.inner.blocking_lock().gi()
+        self.local().gi()
     }
 
     #[setter]
     fn set_gi(&self, value: bool) {
-        self.inner.blocking_lock().set_gi(value);
+        self.local().set_gi(value);
     }
 
     #[getter]
     fn purge_buf(&self) -> bool {
-        self.inner.blocking_lock().purge_buf()
+        self.local().purge_buf()
     }
 
     #[setter]
     fn set_purge_buf(&self, value: bool) {
-        self.inner.blocking_lock().set_purge_buf(value);
+        self.local().set_purge_buf(value);
     }
 
     #[getter]
     fn entry_id<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyBytes>> {
-        self.inner
-            .blocking_lock()
-            .entry_id()
-            .map(|b| PyBytes::new(py, b))
+        self.local().entry_id().map(|b| PyBytes::new(py, b))
     }
 
     #[setter]
     fn set_entry_id(&self, value: Option<Vec<u8>>) -> PyResult<()> {
-        self.inner
-            .blocking_lock()
+        self.local()
             .set_entry_id(value)
             .map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
     #[getter]
     fn resv_tms(&self) -> i16 {
-        self.inner.blocking_lock().resv_tms()
+        self.local().resv_tms()
     }
 
     #[setter]
     fn set_resv_tms(&self, value: i16) {
-        self.inner.blocking_lock().set_resv_tms(value);
+        self.local().set_resv_tms(value);
     }
 
     #[getter]
     fn has_resv_tms(&self) -> bool {
-        self.inner.blocking_lock().has_resv_tms()
+        self.local().has_resv_tms()
     }
 
     // ── Read-only fields ─────────────────────────────────────────────────────
 
     #[getter]
     fn conf_rev(&self) -> u32 {
-        self.inner.blocking_lock().conf_rev()
+        self.local().conf_rev()
     }
 
     #[getter]
     fn sq_num(&self) -> u16 {
-        self.inner.blocking_lock().sq_num()
+        self.local().sq_num()
     }
 
     #[getter]
     fn time_of_entry_ms(&self) -> u64 {
-        self.inner.blocking_lock().time_of_entry_ms()
+        self.local().time_of_entry_ms()
     }
 
     #[getter]
     fn owner<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyBytes>> {
-        self.inner
-            .blocking_lock()
-            .owner()
-            .map(|b| PyBytes::new(py, b))
+        self.local().owner().map(|b| PyBytes::new(py, b))
     }
 }
 
