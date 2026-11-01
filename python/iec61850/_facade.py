@@ -25,14 +25,12 @@ from ._dataclasses import (
     ReportOptFlds,
     ServerIdentity,
     ServerStatus,
+    TimeQuality,
     TlsConfig,
     TriggerOptions,
     TypeSpec,
 )
 from ._enums import FC, AcsiClass, ControlModel, SboClass, Validity
-
-_NIE = "Not implemented in this release."
-
 
 def _as_failure(entry: Any) -> DataAccessFailure | None:
     """Return a per-entry failure marker as a dataclass, else ``None``.
@@ -95,7 +93,7 @@ def _decode_utc_time(buf: bytes) -> datetime:
 
     Bytes 0..4 carry seconds since 1970-01-01 UTC (big-endian u32);
     bytes 4..7 carry a 24-bit big-endian fraction of a second (frac / 2^24);
-    byte 7 is the TimeQuality flag byte and is not decoded here.
+    byte 7 is the TimeQuality flag byte, decoded by ``TimeQuality.from_octet``.
     """
     if len(buf) != 8:
         raise ValueError(f"UTC time wire buffer must be 8 bytes, got {len(buf)}")
@@ -105,45 +103,6 @@ def _decode_utc_time(buf: bytes) -> datetime:
     return datetime.fromtimestamp(secs, tz=timezone.utc) + timedelta(
         microseconds=micros
     )
-
-
-class MmsValue:
-    """Wrapper for composite MMS values (STRUCTURE / ARRAY / BIT_STRING / OCTET_STRING).
-
-    Scalar values are NOT wrapped — typed read methods return native Python
-    types directly, and generic ``IedConnection.read()`` returns a native value
-    or this wrapper depending on the underlying MMS kind.
-    """
-
-    __slots__ = ()
-
-    @property
-    def kind(self) -> str:
-        raise NotImplementedError(_NIE)
-
-    def as_dict(self) -> dict[str, Any]:
-        """STRUCTURE → dict."""
-        raise NotImplementedError(_NIE)
-
-    def as_list(self) -> list[Any]:
-        """ARRAY → list."""
-        raise NotImplementedError(_NIE)
-
-    def as_bytes(self) -> bytes:
-        """OCTET_STRING / BIT_STRING → bytes."""
-        raise NotImplementedError(_NIE)
-
-    @staticmethod
-    def structure(members: dict[str, Any]) -> "MmsValue":
-        raise NotImplementedError(_NIE)
-
-    @staticmethod
-    def array(elements: list[Any]) -> "MmsValue":
-        raise NotImplementedError(_NIE)
-
-    @staticmethod
-    def octet_string(data: bytes) -> "MmsValue":
-        raise NotImplementedError(_NIE)
 
 
 class RcbHandle:
@@ -577,8 +536,20 @@ class IedConnection:
         return await self._native_conn.read_string(ref, fc)
 
     async def read_timestamp(self, ref: str, fc: FC) -> datetime:
+        """Read a ``Timestamp`` (UtcTime) attribute as an aware ``datetime``.
+
+        The TimeQuality octet is not returned; use
+        :meth:`read_timestamp_with_quality` to get it as well.
+        """
         raw: bytes = await self._native_conn.read_timestamp(ref, fc)
         return _decode_utc_time(raw)
+
+    async def read_timestamp_with_quality(
+        self, ref: str, fc: FC
+    ) -> tuple[datetime, TimeQuality]:
+        """Read a ``Timestamp`` (UtcTime) attribute with its TimeQuality."""
+        raw: bytes = await self._native_conn.read_timestamp(ref, fc)
+        return _decode_utc_time(raw), TimeQuality.from_octet(raw[7])
 
     async def read_quality(self, ref: str, fc: FC) -> Quality:
         bits: int = await self._native_conn.read_quality_bits(ref, fc)

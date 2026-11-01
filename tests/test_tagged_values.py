@@ -9,11 +9,12 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
 
-from iec61850 import FC, IedConnection, IedServer
+from iec61850 import FC, IedConnection, IedServer, TimeQuality
 
 IED = "TagIED"
 LD = "Bay"
@@ -133,3 +134,25 @@ async def test_write_time_of_the_wrong_length_raises(
     async with _session(_spec()) as conn:
         with pytest.raises(ValueError, match=message):
             await conn.write(_ref(name), FC.SP, tagged)
+
+
+@pytest.mark.parametrize(
+    "quality",
+    [
+        TimeQuality(),
+        TimeQuality(leap_second_known=True, time_accuracy=10),
+        TimeQuality(clock_failure=True, clock_not_synchronized=True, time_accuracy=31),
+    ],
+)
+async def test_read_timestamp_with_quality_returns_the_time_quality(
+    quality: TimeQuality,
+) -> None:
+    """A UtcTime the server holds reads back with its TimeQuality octet."""
+    stamp = UTC[:7] + bytes([quality.to_octet()])
+    async with _session(_spec({"ut": {"type": "utc_time", "value": stamp}})) as conn:
+        when, read_quality = await conn.read_timestamp_with_quality(_ref("ut"), FC.SP)
+        assert read_quality == quality
+        assert when == datetime.fromtimestamp(0x6553F100, tz=timezone.utc) + timedelta(
+            microseconds=500_000
+        )
+        assert await conn.read_timestamp(_ref("ut"), FC.SP) == when

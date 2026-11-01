@@ -2,7 +2,7 @@
 
 These are pure-Python because they are immutable values — PyO3 classes are
 reserved for opaque handles that hold Rust state (``IedConnection``,
-``RcbHandle``, ``ControlObjectClient``, ``MmsValue``).
+``RcbHandle``, ``ControlObjectClient``).
 """
 
 from __future__ import annotations
@@ -152,6 +152,47 @@ _VALIDITY_BITS: Mapping[Validity, int] = {
 
 
 @dataclass(frozen=True, slots=True)
+class TimeQuality:
+    """TimeQuality of a UtcTime (CNS 61850-7-2 6.1.2.9.3.3; octet layout per
+    CNS 61850-8-1 8.1.3.7, Table 36).
+
+    ``time_accuracy`` is the number of significant bits of the fraction of a
+    second, 0 to 24; 31 means unspecified, and 25 to 30 are invalid values
+    passed through as read.
+    """
+
+    leap_second_known: bool = False
+    clock_failure: bool = False
+    clock_not_synchronized: bool = False
+    time_accuracy: int = 0
+
+    @classmethod
+    def from_octet(cls, octet: int) -> "TimeQuality":
+        """Decode the eighth octet of a UtcTime: the first bit (0x80) is
+        LeapSecondKnown, 0x40 ClockFailure, 0x20 ClockNotSynchronized, and
+        the low five bits TimeAccuracy."""
+        return cls(
+            leap_second_known=bool(octet & 0x80),
+            clock_failure=bool(octet & 0x40),
+            clock_not_synchronized=bool(octet & 0x20),
+            time_accuracy=octet & 0x1F,
+        )
+
+    def to_octet(self) -> int:
+        """Encode as the eighth octet of a UtcTime."""
+        if not 0 <= self.time_accuracy <= 0x1F:
+            raise ValueError(
+                f"time_accuracy must be 0..31, got {self.time_accuracy}"
+            )
+        return (
+            (0x80 if self.leap_second_known else 0)
+            | (0x40 if self.clock_failure else 0)
+            | (0x20 if self.clock_not_synchronized else 0)
+            | self.time_accuracy
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class InclusionReason:
     """Reason a member was included in a report (IEC 61850-7-2 §17.2.3.2.6)."""
 
@@ -160,7 +201,6 @@ class InclusionReason:
     data_update: bool = False
     integrity: bool = False
     general_interrogation: bool = False
-    application_trigger: bool = False
 
     @classmethod
     def from_bits(cls, bits: int) -> "InclusionReason":
@@ -239,19 +279,6 @@ class ClientReport:
             sub_seq_num=d.get("sub_seq_num"),
             more_segments_follow=bool(d.get("more_segments_follow", False)),
         )
-
-
-@dataclass(frozen=True, slots=True)
-class ControlParams:
-    """Parameters for ``ControlObjectClient.operate()``."""
-
-    ctl_val: Any
-    operate_time: datetime | None = None
-    test: bool = False
-    check_synchrocheck: bool = False
-    check_interlock: bool = False
-    origin_orcat: int = 0
-    origin_orident: bytes = b""
 
 
 @dataclass(frozen=True, slots=True)

@@ -1828,6 +1828,23 @@ Tracks iec61850-rust v0.4.0.
 
 - `max_outstanding` is limited to 65535.
 
+- `MmsValue` and `ControlParams` are removed. No method returned or took
+  either: a generic `read()` returns native values (`list`, `bytes`, ...),
+  and `ControlObjectClient` takes its settings through its setters. Drop the
+  imports.
+
+  ```python
+  # 0.15
+  ctl.operate(iec61850.ControlParams(ctl_val=True, test=True))  # never accepted
+  # 0.16
+  ctl.set_test(True)
+  await ctl.operate(True)
+  ```
+
+- `InclusionReason.application_trigger` is removed. It was never set: the
+  client decodes data change, quality change, data update, integrity and
+  general interrogation. Drop the reads.
+
 #### Added
 
 - `IedConnection.get_server_identity()` (MMS Identify) returns a
@@ -1867,6 +1884,9 @@ Tracks iec61850-rust v0.4.0.
   `update_bit_string_from_int` keeps its most-significant-bit-first order.
 - `spawn_report_dispatcher` takes `on_error`, called once with the exception
   that ends polling; `ReportDispatcher.done` and `exception()` report it.
+- `IedConnection.read_timestamp_with_quality(ref, fc)` returns the time and
+  its `TimeQuality` (`leap_second_known`, `clock_failure`,
+  `clock_not_synchronized`, `time_accuracy`).
 
 #### Changed behavior (from iec61850-rust 0.4.0)
 

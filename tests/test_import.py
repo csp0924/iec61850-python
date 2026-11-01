@@ -20,12 +20,12 @@ def test_version_exposed() -> None:
 def test_public_surface_complete() -> None:
     expected = {
         "AcsiClass", "ClientReport", "ControlAddCause", "ControlModel",
-        "ControlObjectClient", "ControlOutcome", "ControlParams",
+        "ControlObjectClient", "ControlOutcome", "TimeQuality",
         "DataSetMember", "FC", "Iec61850Client", "Iec61850ClientConfig",
         "IedConnection", "IedConnectionError", "IedControlError",
         "IedDataAccessError", "IedError", "IedServiceError", "IedTimeoutError",
         "IedTlsError",
-        "InclusionReason", "MmsValue", "OriginValue", "Quality", "QualityDetail",
+        "InclusionReason", "OriginValue", "Quality", "QualityDetail",
         "RcbHandle", "RcbWriteMask", "ReportDispatcher", "ReportEntry",
         "ReportOptFlds", "SboClass", "TlsConfig", "TriggerOptions", "TypeSpec",
         "Validity",
@@ -80,10 +80,25 @@ def test_dataclass_defaults() -> None:
     assert opt.entry_id is False
 
 
-def test_mms_value_structure_is_not_constructible() -> None:
-    """`MmsValue` is a read-side handle; a structure cannot be built locally."""
-    with pytest.raises(NotImplementedError):
-        iec61850.MmsValue.structure({})
+def test_removed_placeholders_are_gone() -> None:
+    """The placeholders no method used are no longer exported."""
+    for name in ("MmsValue", "ControlParams"):
+        assert name not in iec61850.__all__
+        assert not hasattr(iec61850, name)
+    assert "application_trigger" not in iec61850.InclusionReason.__dataclass_fields__
+
+
+def test_time_quality_octet_round_trips() -> None:
+    tq = iec61850.TimeQuality(
+        leap_second_known=True, clock_not_synchronized=True, time_accuracy=10
+    )
+    assert tq.to_octet() == 0xAA
+    assert iec61850.TimeQuality.from_octet(0xAA) == tq
+    assert iec61850.TimeQuality.from_octet(0x5F) == iec61850.TimeQuality(
+        clock_failure=True, time_accuracy=31
+    )
+    with pytest.raises(ValueError, match="time_accuracy"):
+        iec61850.TimeQuality(time_accuracy=32).to_octet()
 
 
 def test_rcb_write_mask_builds_from_field_names() -> None:
