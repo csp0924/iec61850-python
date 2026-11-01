@@ -112,6 +112,9 @@ def test_to_dict_data_set_and_rcb_present() -> None:
     assert rcb["trg_ops"]["quality_change"] is True
     assert rcb["opt_fields"]["seq_num"] is True
     assert rcb["opt_fields"]["reason_code"] is True
+    # `indexed` defaults to true and no <RptEnabled> leaves the maximum out.
+    assert rcb["indexed"] is True
+    assert rcb["rpt_enabled_max"] is None
 
 
 def test_to_dict_data_type_templates() -> None:
@@ -132,6 +135,9 @@ def test_to_dict_data_type_templates() -> None:
     assert stval["b_type"] == "Enum"
     assert stval["type_ref"] == "BehaviourKind"
     assert stval["fc"] == "ST"
+    # A scalar declaration carries no element count.
+    assert stval["count"] == 0
+    assert stval["count_ref"] is None
 
 
 def test_summary_is_canonical_text() -> None:
@@ -212,3 +218,18 @@ def test_load_scl_missing_file_raises_os_error(tmp_path: Path) -> None:
     missing = tmp_path / "does_not_exist.icd"
     with pytest.raises(OSError):
         load_scl(str(missing))
+
+
+# The SPS status declared as an array of four elements.
+ARRAY_SCL = MINIMAL_SCL.replace(
+    '<DA name="stVal" fc="ST" bType="BOOLEAN"/>',
+    '<DA name="stVal" fc="ST" bType="BOOLEAN" count="4"/>',
+)
+
+
+def test_to_dict_reports_the_element_count_of_an_array() -> None:
+    dtt = parse_scl(ARRAY_SCL).to_dict()["data_type_templates"]
+    stval = dtt["do_types"]["SPS_1"]["das"][0]
+    assert stval["name"] == "stVal"
+    assert stval["count"] == 4
+    assert stval["count_ref"] is None

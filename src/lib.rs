@@ -3288,6 +3288,7 @@ fn rcb_to_pydict<'py>(
     d.set_item("buf_time", rcb.buf_time)?;
     d.set_item("trg_ops", trg_ops_to_pydict(py, &rcb.trg_ops)?)?;
     d.set_item("opt_fields", opt_fields_to_pydict(py, &rcb.opt_fields)?)?;
+    d.set_item("indexed", rcb.indexed)?;
     d.set_item("rpt_enabled_max", rcb.rpt_enabled_max)?;
     Ok(d)
 }
