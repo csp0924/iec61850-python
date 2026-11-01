@@ -64,6 +64,18 @@ class IedTlsError(IedConnectionError):
     kind: str | None
     message: str | None
 
+class IedAuthenticationError(IedConnectionError):
+    """The peer refused the association for the calling identity or its
+    credentials.
+
+    ``diagnostic`` is the acse-service-user diagnostic code of the rejecting
+    AARE and ``diagnostic_name`` its name, for instance 13
+    ``"authentication-failure"``; ``reason`` is ``"authentication-rejected"``.
+    """
+
+    diagnostic: int | None
+    diagnostic_name: str | None
+
 class IedTimeoutError(IedError):
     """Operation exceeded its deadline.
 
@@ -441,6 +453,9 @@ class IedServer:
 
     def set_edition(self, edition: str) -> None: ...
     def set_write_access_policy(self, fc: str, allow: bool) -> None: ...
+    def set_authenticator(
+        self, authenticator: Callable[[dict[str, Any]], bool | str | int | None] | None
+    ) -> None: ...
     def write_access_allowed(self, fc: str) -> bool: ...
     @property
     def is_running(self) -> bool: ...

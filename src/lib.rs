@@ -95,6 +95,11 @@ use iec61850_server::setting_groups::{
     SettingGroupHandler as RustSettingGroupHandler, SettingGroupRuntime as RustSettingGroupRuntime,
     SgcbSnapshot as RustSgcbSnapshot,
 };
+use iec61850_server::{
+    AcseAuth as RustAcseAuth, AcseServiceUserDiagnostic as RustAcseDiagnostic,
+    AssociationAuthenticator as RustAssociationAuthenticator,
+    AssociationDecision as RustAssociationDecision, AssociationRequest as RustAssociationRequest,
+};
 use iec61850_server::{DataModelGuard as RustDataModelGuard, IedServer as RustIedServer};
 use iec61850_sntp::{SntpClient as RustSntpClient, SntpError as RustSntpError};
 use pyo3::create_exception;
@@ -167,6 +172,13 @@ create_exception!(
     "TLS handshake failed while the connection was being established."
 );
 
+create_exception!(
+    _native,
+    IedAuthenticationError,
+    IedConnectionError,
+    "The peer refused the association for the calling identity or its credentials."
+);
+
 /// Context for mapping `ClientError` → Python exception.
 ///
 /// While connecting, every failure that is neither a timeout, a failed TLS
@@ -181,9 +193,10 @@ enum ErrCtx {
 
 /// Attribute names each exception class carries, with ``None`` as the class
 /// default so an instance that does not set one still answers it.
-const EXCEPTION_ATTRIBUTES: [(&str, &[&str]); 6] = [
+const EXCEPTION_ATTRIBUTES: [(&str, &[&str]); 7] = [
     ("IedConnectionError", &["reason", "kind", "detail", "code"]),
     ("IedTlsError", &["kind", "message"]),
+    ("IedAuthenticationError", &["diagnostic", "diagnostic_name"]),
     ("IedTimeoutError", &["timeout_ms"]),
     (
         "IedServiceError",
@@ -348,6 +361,14 @@ fn map_client_error(err: ClientError, ctx: ErrCtx) -> PyErr {
         (ClientError::AssociateFailed, _) => with_attrs(
             IedConnectionError::new_err(message),
             [("reason", str_attr("associate-failed"))],
+        ),
+        (ClientError::AuthenticationRejected { diagnostic, .. }, _) => with_attrs(
+            IedAuthenticationError::new_err(message),
+            [
+                ("reason", str_attr("authentication-rejected")),
+                ("diagnostic", int_attr(diagnostic.code())),
+                ("diagnostic_name", str_attr(diagnostic.to_string())),
+            ],
         ),
         (ClientError::InitiateFailed { error_code, .. }, _) => with_attrs(
             IedConnectionError::new_err(message),
@@ -555,7 +576,7 @@ fn parse_addr(addr: &str) -> PyResult<(String, u16)> {
 }
 
 /// Keys the ``iso`` mapping accepts, in the order the defaults table lists them.
-const ISO_PARAM_KEYS: [&str; 10] = [
+const ISO_PARAM_KEYS: [&str; 11] = [
     "local_t_sel",
     "remote_t_sel",
     "local_s_sel",
@@ -566,6 +587,7 @@ const ISO_PARAM_KEYS: [&str; 10] = [
     "remote_ap_title",
     "local_ae_qualifier",
     "remote_ae_qualifier",
+    "password",
 ];
 
 /// Reads one selector entry and converts it with `build`.
@@ -690,7 +712,33 @@ fn iso_params_from_dict(iso: &Bound<'_, PyDict>) -> PyResult<RustIsoConnectionPa
         iso_ae_qualifier(iso, "local_ae_qualifier", params.local_ae_qualifier)?;
     params.remote_ae_qualifier =
         iso_ae_qualifier(iso, "remote_ae_qualifier", params.remote_ae_qualifier)?;
+    params.authentication = iso_password(iso, params.authentication)?;
     Ok(params)
+}
+
+/// Reads the ACSE password entry, a ``str`` (sent as its UTF-8 octets),
+/// ``bytes`` or ``None``.
+///
+/// An absent key leaves `current` in place; ``None`` sends no credentials.
+fn iso_password(iso: &Bound<'_, PyDict>, current: RustAcseAuth) -> PyResult<RustAcseAuth> {
+    match iso.get_item("password")? {
+        None => Ok(current),
+        Some(value) if value.is_none() => Ok(RustAcseAuth::None),
+        Some(value) => {
+            let octets = if let Ok(text) = value.extract::<String>() {
+                text.into_bytes()
+            } else if value.is_instance_of::<PyBytes>()
+                || value.is_instance_of::<pyo3::types::PyByteArray>()
+            {
+                value.extract::<Vec<u8>>()?
+            } else {
+                return Err(PyValueError::new_err(
+                    "iso['password']: must be str, bytes or None",
+                ));
+            };
+            Ok(RustAcseAuth::Password(octets))
+        }
+    }
 }
 
 /// Parse a Python ``TlsVersion`` token into the native enum.
@@ -3951,6 +3999,8 @@ enum PendingHandler {
     SettingGroup(PendingSettingGroupHandler),
     /// Queued `register_from_model`.
     FromModel,
+    /// Queued `set_authenticator`; `None` removes it.
+    Authenticator(Option<Py<PyAny>>),
 }
 
 /// Queued `on_control` registration.
@@ -4177,12 +4227,27 @@ async fn server_do_start(
         }
     };
 
+    let mut authenticator: Option<Py<PyAny>> = None;
+    let pending: Vec<PendingHandler> = pending
+        .into_iter()
+        .filter_map(|entry| match entry {
+            PendingHandler::Authenticator(callback) => {
+                authenticator = callback;
+                None
+            }
+            other => Some(other),
+        })
+        .collect();
+
     let mut builder = RustIedServer::builder()
         .model(Arc::clone(model))
         .bind(bind_addr)
         .config(*config);
     if let Some(pt) = pending_tls {
         builder = builder.with_tls(build_tls_acceptor(&pt)?);
+    }
+    if let Some(callback) = authenticator {
+        builder = builder.authenticator(Arc::new(PyAuthenticator { callback }));
     }
     let server = builder.build().map_err(map_server_error)?;
     let server_arc = Arc::new(server);
@@ -4237,6 +4302,7 @@ async fn server_do_start(
             PendingHandler::LogControl(plcb) => pending_lcbs.push(plcb),
             PendingHandler::SettingGroup(psg) => pending_sgcb_handlers.push(psg),
             PendingHandler::FromModel => from_model = true,
+            PendingHandler::Authenticator(_) => {}
         }
     }
 
@@ -4886,6 +4952,91 @@ impl RustWriteHandler for PyWriteHandler {
 /// All three share one contract: `None` or `True` accepts; `False`, any
 /// other return value, or a raised exception refuses the request with
 /// `ObjectAccessDenied`.
+/// Bridges a Python callable to `AssociationAuthenticator`.
+///
+/// The callable receives one mapping per association request (``peer``,
+/// ``calling_ap_title``, ``calling_ae_qualifier``, ``called_ap_title``,
+/// ``called_ae_qualifier``, ``mechanism`` and ``password``) and decides with
+/// its return value: ``None`` or ``True`` accepts; ``False`` refuses with
+/// authentication-failure; an acse-service-user diagnostic name such as
+/// ``"calling-AP-title-not-recognized"``, or its code, refuses with that
+/// diagnostic. Any other value, an unknown name, or a raised exception
+/// refuses with authentication-failure.
+struct PyAuthenticator {
+    callback: Py<PyAny>,
+}
+
+impl RustAssociationAuthenticator for PyAuthenticator {
+    fn authenticate(&self, request: &RustAssociationRequest<'_>) -> RustAssociationDecision {
+        Python::attach(|py| {
+            let bound = self.callback.bind(py);
+            let outcome =
+                association_request_to_pydict(py, request).and_then(|req| bound.call1((req,)));
+            match outcome {
+                Ok(value) => association_decision_from_py(&value),
+                Err(err) => {
+                    err.write_unraisable(py, Some(bound));
+                    RustAssociationDecision::Reject(RustAcseDiagnostic::AuthenticationFailure)
+                }
+            }
+        })
+    }
+}
+
+fn association_request_to_pydict<'py>(
+    py: Python<'py>,
+    request: &RustAssociationRequest<'_>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let addressing = request.addressing;
+    let d = PyDict::new(py);
+    d.set_item("peer", request.peer.to_string())?;
+    d.set_item(
+        "calling_ap_title",
+        addressing.calling_ap_title.as_ref().map(|t| t.to_string()),
+    )?;
+    d.set_item("calling_ae_qualifier", addressing.calling_ae_qualifier)?;
+    d.set_item(
+        "called_ap_title",
+        addressing.called_ap_title.as_ref().map(|t| t.to_string()),
+    )?;
+    d.set_item("called_ae_qualifier", addressing.called_ae_qualifier)?;
+    d.set_item("mechanism", request.authentication.label())?;
+    d.set_item("password", request.password().map(|p| PyBytes::new(py, p)))?;
+    Ok(d)
+}
+
+/// The acse-service-user diagnostic whose name is `name`.
+fn acse_diagnostic_from_name(name: &str) -> Option<RustAcseDiagnostic> {
+    (0..=u8::MAX as u32)
+        .map_while(RustAcseDiagnostic::from_code)
+        .find(|d| d.to_string() == name)
+}
+
+fn association_decision_from_py(value: &Bound<'_, PyAny>) -> RustAssociationDecision {
+    let refuse = RustAssociationDecision::Reject(RustAcseDiagnostic::AuthenticationFailure);
+    if value.is_none() {
+        return RustAssociationDecision::Accept;
+    }
+    if value.is_instance_of::<pyo3::types::PyBool>() {
+        return if value.extract::<bool>().unwrap_or(false) {
+            RustAssociationDecision::Accept
+        } else {
+            refuse
+        };
+    }
+    if let Ok(name) = value.extract::<String>() {
+        return acse_diagnostic_from_name(&name)
+            .map(RustAssociationDecision::Reject)
+            .unwrap_or(refuse);
+    }
+    if let Ok(code) = value.extract::<u32>() {
+        return RustAcseDiagnostic::from_code(code)
+            .map(RustAssociationDecision::Reject)
+            .unwrap_or(refuse);
+    }
+    refuse
+}
+
 struct PySettingGroupHandler {
     on_act_sg: Option<Py<PyAny>>,
     on_edit_sg: Option<Py<PyAny>>,
@@ -6617,6 +6768,62 @@ impl PyIedServer {
         })
     }
 
+    /// Install the callable that decides on every association request, or
+    /// remove it with ``None``; without one every association is accepted.
+    ///
+    /// The callable receives one mapping per request: ``peer``
+    /// (``"host:port"``), ``calling_ap_title`` and ``called_ap_title``
+    /// (dotted OBJECT IDENTIFIER or ``None``), ``calling_ae_qualifier`` and
+    /// ``called_ae_qualifier`` (``int`` or ``None``), ``mechanism``
+    /// (``"none"``, ``"password"``, ``"certificate"`` or ``"other"``) and
+    /// ``password`` (``bytes`` or ``None``). It returns ``None`` or ``True``
+    /// to accept; ``False`` to refuse with authentication-failure; or an
+    /// acse-service-user diagnostic name such as
+    /// ``"calling-AP-title-not-recognized"``, or its code, to refuse with that
+    /// diagnostic. Any other value, an unknown name, or a raised exception
+    /// (reported through ``sys.unraisablehook``) refuses with
+    /// authentication-failure. A refused client receives a Session REFUSE
+    /// whose AARE carries the diagnostic and an Initiate-ErrorPDU with access
+    /// object-access-denied, and raises `IedAuthenticationError`.
+    ///
+    /// The callable runs synchronously while the association is being set
+    /// up, holding the GIL; it must not block. Other associations proceed
+    /// while it runs. A password reaches it in clear unless the association
+    /// runs over TLS.
+    ///
+    /// Before `start()` it is installed with the server, so no association
+    /// is accepted without it; on a running server it applies to the
+    /// associations requested afterwards. Raises `ValueError` when
+    /// `authenticator` is not callable and `RuntimeError` once the server has
+    /// been stopped.
+    #[pyo3(signature = (authenticator))]
+    fn set_authenticator(&self, py: Python<'_>, authenticator: Option<Py<PyAny>>) -> PyResult<()> {
+        if let Some(cb) = &authenticator {
+            if !cb.bind(py).is_callable() {
+                return Err(PyValueError::new_err(
+                    "set_authenticator: authenticator must be callable or None",
+                ));
+            }
+        }
+        match &mut *self.state.lock().unwrap() {
+            ServerState::NotStarted {
+                pending_handlers, ..
+            } => {
+                pending_handlers.push(PendingHandler::Authenticator(authenticator));
+                Ok(())
+            }
+            ServerState::Running { server, .. } => {
+                server.set_authenticator(authenticator.map(|callback| {
+                    Arc::new(PyAuthenticator { callback }) as Arc<dyn RustAssociationAuthenticator>
+                }));
+                Ok(())
+            }
+            ServerState::Stopped => Err(PyRuntimeError::new_err(
+                "set_authenticator: server has been stopped",
+            )),
+        }
+    }
+
     /// Whether remote writes are allowed under the functional constraint
     /// `fc`, before `start()` as the server will start and while running as
     /// it does. A constraint that is never writable returns ``False``; an
@@ -8007,6 +8214,10 @@ fn _native(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("SclError", py.get_type::<SclError>())?;
     m.add("IedServerError", py.get_type::<IedServerError>())?;
     m.add("IedTlsError", py.get_type::<IedTlsError>())?;
+    m.add(
+        "IedAuthenticationError",
+        py.get_type::<IedAuthenticationError>(),
+    )?;
     for (class, attrs) in EXCEPTION_ATTRIBUTES {
         let ty = m.getattr(class)?;
         for attr in attrs {

@@ -741,6 +741,10 @@ class IsoConnectionParameters:
     customarily expect; the standard leaves them to the configuration. An
     AP-title of ``None`` leaves that field out of the ACSE AARQ.
 
+    ``password`` is sent as the ACSE password mechanism (a ``str`` as its
+    UTF-8 octets); ``None`` sends no credentials. It travels in clear unless
+    the association runs over TLS, and the ``repr`` leaves it out.
+
     Pass an instance to ``IedConnection.connect()`` or ``connect_tls()`` to
     address a server that expects selectors other than the defaults.
     """
@@ -755,6 +759,7 @@ class IsoConnectionParameters:
     remote_ap_title: str | None = "1.1.1.999.1"
     local_ae_qualifier: int | None = 12
     remote_ae_qualifier: int | None = 12
+    password: str | bytes | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         """Validate every field, raising ``ValueError`` on the first offender."""
@@ -768,6 +773,10 @@ class IsoConnectionParameters:
         _check_ap_title("remote_ap_title", self.remote_ap_title)
         _check_ae_qualifier("local_ae_qualifier", self.local_ae_qualifier)
         _check_ae_qualifier("remote_ae_qualifier", self.remote_ae_qualifier)
+        if self.password is not None and not isinstance(self.password, (str, bytes)):
+            raise ValueError(
+                f"password must be str, bytes or None, got {type(self.password).__name__}"
+            )
 
     def to_native(self) -> dict[str, Any]:
         """Return the mapping the native ``connect`` entry points accept."""
@@ -782,6 +791,7 @@ class IsoConnectionParameters:
             "remote_ap_title": self.remote_ap_title,
             "local_ae_qualifier": self.local_ae_qualifier,
             "remote_ae_qualifier": self.remote_ae_qualifier,
+            "password": self.password,
         }
 
 

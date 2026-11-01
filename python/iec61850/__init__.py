@@ -55,6 +55,7 @@ from ._facade import (
     ReportDispatcher,
 )
 from ._native import (
+    IedAuthenticationError,
     IedConnectionError,
     IedControlError,
     IedDataAccessError,
@@ -102,6 +103,7 @@ __all__ = [
     "Iec61850Client",
     "Iec61850ClientConfig",
     "IedConnection",
+    "IedAuthenticationError",
     "IedConnectionError",
     "IedControlError",
     "IedDataAccessError",

@@ -241,12 +241,20 @@ which carries the full per-service detail.
 | Configurable ISO addressing    |   yes   |    —    |  yes   |   —    |
 | TLS 1.2 / 1.3 (IEC 62351-3)    | yes (1) | yes (1) |  yes   |  yes   |
 | Mutual TLS / pinned peer / CRL |   yes   |   yes   |  yes   |  yes   |
-| Authentication (ACSE password) |    —    |    —    |   —    |   —    |
+| Authentication (ACSE password) | yes (15)| yes (15)|  yes   |  yes   |
+| Association gating (AP-title)  |    —    | yes (15)|   —    |  yes   |
 
 1. Includes 62351-3 cipher whitelist, `verify_hostname` and
    `time_validation` knobs, version pinning, and known-peer profile; the
    certificate chain is always validated. A failed client handshake raises
    `IedTlsError` with its `kind`. Backed by `iec61850-tls`.
+
+15. The client sends `IsoConnectionParameters(password=...)` as the ACSE
+    password mechanism; a refusal naming the calling identity or the
+    credentials raises `IedAuthenticationError`. The server decides on each
+    association through `IedServer.set_authenticator`. The IEC 62351-4
+    certificate mechanism is not implemented; peer authentication by
+    certificate is done by TLS.
 
 ### Server class (§7)
 
@@ -923,6 +931,21 @@ An over-long selector or a malformed AP-title raises `ValueError` when the
 parameters are built, before any socket is opened. An AP-title of `None` leaves
 that field out of the ACSE AARQ.
 
+`password` sends the ACSE password mechanism (a `str` goes out as its UTF-8
+octets). It travels in clear unless the association runs over TLS, and the
+dataclass `repr` leaves it out. A server that refuses the calling identity or
+the credentials raises `IedAuthenticationError`, a subclass of
+`IedConnectionError`, whose `diagnostic` and `diagnostic_name` give the
+acse-service-user diagnostic of the refusal:
+
+```python
+iso = iec61850.IsoConnectionParameters(password="s3cret")
+try:
+    conn = await iec61850.IedConnection.connect("10.0.0.1:102", iso=iso)
+except iec61850.IedAuthenticationError as e:
+    print(e.diagnostic, e.diagnostic_name)   # 13 authentication-failure
+```
+
 Releases before 0.14.0 always offered empty presentation selectors and no
 AP-title or AE-qualifier at all. A peer configured to expect that addressing
 can be given it back:
@@ -1347,6 +1370,36 @@ difference is that under `"ed2.1"` a client may not write the `GoID` and
 `"DC"`, `"CF"`, `"SP"`, `"SV"`, `"SE"` or `"BL"`; `SP`, `SV` and `SE` are
 allowed by default. A refused write fails with `ObjectAccessDenied` before
 any `on_write` handler runs. `write_access_allowed(fc)` reports the policy.
+
+### Association authentication
+
+`set_authenticator(callable)` installs a callable that decides on every
+association request; `set_authenticator(None)` removes it, and without one
+every association is accepted. It receives a mapping with `peer`,
+`calling_ap_title`, `calling_ae_qualifier`, `called_ap_title`,
+`called_ae_qualifier`, `mechanism` (`"none"`, `"password"`, `"certificate"`
+or `"other"`) and `password` (`bytes` or `None`), and returns `None` or
+`True` to accept, `False` to refuse with authentication-failure, or an
+acse-service-user diagnostic name or code to refuse with that diagnostic.
+Any other value, an unknown name or a raised exception refuses with
+authentication-failure. The refused client receives a Session REFUSE whose
+AARE carries the diagnostic and an Initiate-ErrorPDU with access
+object-access-denied.
+
+```python
+def authenticate(request: dict) -> bool | str | None:
+    if request["calling_ap_title"] not in ALLOWED_AP_TITLES:
+        return "calling-AP-title-not-recognized"
+    return request["password"] == b"s3cret"
+
+server.set_authenticator(authenticate)
+```
+
+The callable runs synchronously while the association is set up, holding
+the GIL, so it must not block; other associations proceed meanwhile.
+Installed before `start()`, it is in place before the first association; on
+a running server it applies to the associations requested afterwards. A
+password reaches it in clear unless the association runs over TLS.
 
 ### Server-side TLS
 
@@ -1883,6 +1936,7 @@ does not apply reads `None`.
 |--------------------------|------------------------------------------------------------------------------------------------|
 | `IedConnectionError`     | `reason` (`"connection-lost"`, `"released-by-peer"`, `"transport"`, `"associate-failed"`, `"initiate-failed"`), `kind` and `detail` of a transport failure, `code` of a refused Initiate |
 | `IedSessionRefusedError` | `reason_code`, `transport_disconnect`, `provider_reason`                                       |
+| `IedAuthenticationError` | `diagnostic` and `diagnostic_name` of the refusing AARE; `reason` is `"authentication-rejected"` |
 | `IedTlsError`            | `kind` (`"verification"`, `"alert_received"`, `"version_unsupported"`, `"cipher_unsupported"`, `"timeout"`, `"io"`, `"other"`), `message` |
 | `IedTimeoutError`        | `timeout_ms`                                                                                   |
 | `IedServiceError`        | `reason` (`"service-error"`, `"reject"`, `"conclude-rejected"`, `"outstanding-limit"`, `"pdu-too-large"`, `"name-list-limit"`, `"name-list-not-advancing"`, `"journal-not-advancing"`), `error_class`, `code`, `reject_type`, `number_deleted`, `pdu_size`, `max_size`, `limit` |
@@ -2188,6 +2242,12 @@ Tracks iec61850-rust v0.4.0.
   whose `datSet` names no data set of its logical node, which the SCL reader
   refuses.
 
+- ACSE authentication: `IsoConnectionParameters.password` (the ACSE password
+  mechanism), `IedAuthenticationError` with `diagnostic` and
+  `diagnostic_name`, and `IedServer.set_authenticator(callable)`, which
+  decides on every association request from its AP-titles, AE-qualifiers and
+  credentials.
+
 #### Fixed
 
 - `connect` and `connect_tls` honour a `timeout_ms` above 10 s. The attempt
@@ -2245,8 +2305,9 @@ Tracks iec61850-rust v0.4.0.
 - GI and integrity reports read a data object or constructed attribute
   written concurrently whole or not at all.
 - A GoCB `DatSet` reads as `"<LD>/LLN0$<name>"`.
-- A client refused at Initiate or authentication raises
-  `IedSessionRefusedError`; a client refused by TLS gets the alert reason.
+- A client refused at Initiate raises `IedSessionRefusedError`; one refused
+  for its calling identity or credentials raises `IedAuthenticationError`; a
+  client refused by TLS gets the alert reason.
 - Directory walks keep the server's order without duplicates, and SCL
   errors start with `"SCL error at"`; data object members follow the DOType
   declaration order.
