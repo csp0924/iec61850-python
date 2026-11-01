@@ -11,6 +11,7 @@ import pytest
 import _demo
 from iec61850 import (
     FC,
+    AcsiClass,
     ControlModel,
     DataSetMember,
     IedConnection,
@@ -736,3 +737,48 @@ def test_abort_and_dynamic_count_require_a_running_server() -> None:
         server.abort_all_connections()
     with pytest.raises(RuntimeError, match="not running"):
         server.dynamic_dataset_count()
+
+
+@pytest.mark.parametrize(
+    ("block", "edit"),
+    [
+        (
+            "GOOSE",
+            lambda cid: cid.replace(
+                'datSet="dsStatus"\n                        confRev="1" type="GOOSE"',
+                'datSet="dsMissing"\n                        confRev="1" type="GOOSE"',
+            ),
+        ),
+        (
+            "log",
+            lambda cid: cid.replace(
+                "          </LN0>",
+                '            <LogControl name="lcbMissing" datSet="dsMissing"'
+                ' logName="GeneralLog"/>\n          </LN0>',
+                1,
+            ),
+        ),
+    ],
+)
+async def test_register_from_model_with_a_missing_data_set_registers_nothing(
+    block: str, edit
+) -> None:
+    """A GOOSE or log control block naming a data set the server does not
+    hold fails the whole call before anything is registered."""
+    cid = _demo.DEMO_CID.read_text(encoding="utf-8")
+    text = edit(cid)
+    assert text != cid
+    server = IedServer.from_scl_str(text, ied_name=_demo.IED_NAME)
+    server.bind("127.0.0.1:0")
+    async with server:
+        with pytest.raises(IedServerError, match=f"{block} control block"):
+            server.register_from_model()
+        conn = await IedConnection.connect(server.bound_addr)
+        try:
+            for cls in (AcsiClass.REPORT, AcsiClass.BUFFERED_REPORT):
+                assert (
+                    await conn.get_logical_node_directory(f"{_demo.DOMAIN}/LLN0", cls)
+                    == []
+                )
+        finally:
+            await conn.disconnect()
