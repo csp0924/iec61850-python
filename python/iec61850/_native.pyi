@@ -106,10 +106,12 @@ class IedControlError(IedError):
     """Control object Select / Operate / Cancel failure."""
 
 class IedServerError(IedError):
-    """Server-side bind, lifecycle, or model error.
+    """Model or registration the hosted server refuses.
 
-    ``reference`` names the object a refused duplicate registration
-    addressed, else ``None``.
+    Raised by ``start()`` and ``register_from_model()``. ``reference`` names
+    the object a refused duplicate registration addressed, else ``None``.
+    A port that cannot be bound raises ``OSError``, and a call in the wrong
+    lifecycle state ``RuntimeError``, not this class.
     """
 
     reference: str | None
@@ -388,6 +390,12 @@ class IedServer:
     setters, and the ``association_*_timeout_ms`` and
     ``max_dynamic_datasets*`` limits. Start via ``async with`` or
     :meth:`start` / :meth:`stop`.
+
+    ``start()`` raises ``OSError`` when it cannot listen on the bound
+    address, ``RuntimeError`` without a prior ``bind()`` or on a second call,
+    and ``IedServerError`` for a model or registration the server refuses.
+    A setter or ``register_*`` call after ``start()``, and a running-only
+    call while the server is not running, raise ``RuntimeError``.
     """
 
     @classmethod

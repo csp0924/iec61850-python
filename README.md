@@ -1131,10 +1131,23 @@ asyncio.run(main())
 
 Configuration setters (`vendor`, `model_name`, `revision`, `max_connections`,
 the association limits below, `set_edition` and `set_write_access_policy`)
-must be called before `start()`. Updating an unknown path raises `KeyError`;
-a type mismatch (e.g. pushing `update_float32` to a `BOOLEAN` attribute)
-raises `IedDataAccessError`. Bind failures and other lifecycle errors
-surface as `IedServerError`. While running, `connection_count` reports the
+must be called before `start()`. `vendor`, `model_name`, `revision`,
+`max_connections` and the association limits are write-only: reading one
+raises `AttributeError`.
+
+A hosted server raises these exceptions:
+
+| Exception            | When                                                                                       |
+|----------------------|--------------------------------------------------------------------------------------------|
+| `OSError`            | `start()` cannot listen on the bound address, for example because the port is in use; `from_scl` cannot read its file |
+| `RuntimeError`       | a call in the wrong lifecycle state: a setter or `register_*` after `start()`, `start()` without `bind()` or twice, a running-only call (`bound_addr`, `connection_count`, `stop()`, `batch()`, `log_value`, …) while the server is not running, a second `with_tls()`, concurrent `batch()` blocks |
+| `ValueError`         | an argument that does not parse: a `bind()` address, a model spec, a token such as `ctl_model` |
+| `KeyError`           | a path, logical device or data set the model does not hold: an `update_*` path, a report control block whose data set is unknown at `start()`, a setting group handler for a logical device without an SGCB |
+| `IedDataAccessError` | an `update_*` value that does not fit the attribute's type (e.g. `update_float32` on a `BOOLEAN`) |
+| `IedServerError`     | a model or registration the server refuses at `start()` or `register_from_model()`, such as a duplicate data set or control block (`reference` names it) |
+| `SclError`           | an SCL document `from_scl` cannot parse or resolve                                         |
+
+While running, `connection_count` reports the
 open connections, `abort_all_connections()` aborts every association and
 returns how many it marked, and `dynamic_dataset_count()` counts the data
 sets clients have created.
