@@ -341,8 +341,8 @@ The hosted server answers Identify with the `vendor`, `model_name` and
    `get_setting_group_value()` / `set_setting_group_value()`. Clients,
    in Python and in Rust alike, drive SGCB through the generic write API
    on the special MMS path (e.g.
-   ``write("IED1LD0/LLN0.SGCB.ActSG", FC.SP, 2)``); neither has a dedicated
-   setting-group API.
+   ``write("IED1LD0/LLN0.SGCB.ActSG", FC.SP, {"type": "uint", "value": 2})``);
+   neither has a dedicated setting-group API.
 
 ### Reporting — URCB / BRCB (§17.2)
 
@@ -1600,13 +1600,18 @@ value of another group takes effect when that group is activated. In SCL a
 setting carries one `<Val sGroup="n">` per group.
 
 Clients drive SGCB through the regular write API on the special MMS
-path:
+path. `ActSG` and `EditSG` are INT8U, so write them as a tagged unsigned
+value (or with `write_uint32`); a plain Python `int` is sent as a signed
+MMS INTEGER, which a server that checks the declared type refuses:
 
 ```python
-await conn.write("IED1GenericIO/LLN0.SGCB.ActSG", FC.SP, 2)    # SelectActiveSG
-await conn.write("IED1GenericIO/LLN0.SGCB.EditSG", FC.SP, 2)   # open edit
+group = {"type": "uint", "value": 2}
+await conn.write("IED1GenericIO/LLN0.SGCB.ActSG", FC.SP, group)   # SelectActiveSG
+await conn.write("IED1GenericIO/LLN0.SGCB.EditSG", FC.SP, group)  # open edit
 await conn.write("IED1GenericIO/LLN0.SGCB.CnfEdit", FC.SP, True)  # commit
 ```
+
+The server this package hosts also accepts a non-negative INTEGER there.
 
 ### Building a server from a model dict (no SCL)
 
