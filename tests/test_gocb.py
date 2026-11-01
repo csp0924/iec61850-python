@@ -265,3 +265,47 @@ async def test_a_gocb_without_a_communication_section_keeps_the_default_destinat
             assert (await conn.get_gocb_values(GOCB_IEC)).go_ena is True
         finally:
             await conn.disconnect()
+
+
+async def test_gse_values_written_another_way_load_and_read_typed() -> None:
+    """A lower-case MAC and a one-digit VLAN-ID read as written."""
+    cid = _demo.DEMO_CID.read_text(encoding="utf-8")
+    text = cid.replace(
+        '<P type="MAC-Address">01-0C-CD-01-00-01</P>',
+        '<P type="MAC-Address">01-0c-cd-01-00-01</P>',
+    ).replace('<P type="VLAN-ID">000</P>', '<P type="VLAN-ID">5</P>')
+    assert text != cid
+    server = IedServer.from_scl_str(text, ied_name=_demo.IED_NAME)
+    gse = server.gse_address("LD0", "gcbStatus")
+    assert gse is not None
+    assert gse["mac_address"] == b"\x01\x0c\xcd\x01\x00\x01"
+    assert gse["vlan_id"] == 5
+    assert gse["parameters"]["MAC-Address"] == "01-0c-cd-01-00-01"
+
+
+async def test_an_unreadable_gse_mac_leaves_the_block_without_a_destination() -> None:
+    """A MAC address that cannot be read loads, reads None, and the block it
+    addresses is registered disabled."""
+    cid = _demo.DEMO_CID.read_text(encoding="utf-8")
+    text = cid.replace(
+        '<P type="MAC-Address">01-0C-CD-01-00-01</P>',
+        '<P type="MAC-Address">not-a-mac</P>',
+    )
+    assert text != cid
+    server = IedServer.from_scl_str(text, ied_name=_demo.IED_NAME)
+    gse = server.gse_address("LD0", "gcbStatus")
+    assert gse is not None
+    assert gse["mac_address"] is None
+    assert gse["parameters"]["MAC-Address"] == "not-a-mac"
+    server.bind("127.0.0.1:0")
+    server.register_from_model()
+    async with server:
+        conn = await IedConnection.connect(server.bound_addr)
+        try:
+            values = await conn.get_gocb_values(GOCB_IEC)
+            assert values.dst_address.addr == bytes(6)
+            with pytest.raises(iec61850.IedDataAccessError) as excinfo:
+                await conn.set_gocb_values(GOCB_IEC, go_ena=True)
+            assert excinfo.value.code == 2
+        finally:
+            await conn.disconnect()

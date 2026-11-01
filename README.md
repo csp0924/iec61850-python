@@ -1366,12 +1366,16 @@ Each address carries every `<P>` under `parameters` (type to text) and the
 typed `mac_address` (6 bytes), `app_id`, `vlan_id`, `vlan_priority` and `ip`,
 `None` when absent. `register_from_model()` sets the `DstAddress`, `MinTime`
 and `MaxTime` of a GOOSE control block from its `<GSE>`; a server hosted from
-Python sends no GOOSE frames (footnote 7). A malformed `<P>` value raises
-`SclError` when the SCL is read, and so does a connected access point of the
-loaded IED that names an access point or control block the IED does not
-declare. A `<ConnectedAP>` of an IED the file does not declare, and the
-other references of the section that name nothing, are skipped with a
-warning.
+Python sends no GOOSE frames (footnote 7). A `<P>` value written another
+way than the schema form of its type (a one-digit VLAN-ID, a lower-case MAC
+address, an AP title or selector with white space) is read as written, with
+a warning. A value that cannot be read still loads: it stays under
+`parameters`, its typed key reads `None`, and `register_from_model()`
+registers the GOOSE control block it addresses without a destination, with a
+warning. A connected access point of the loaded IED that names an access
+point or control block the IED does not declare raises `SclError`; a
+`<ConnectedAP>` of an IED the file does not declare, and the other references
+of the section that name nothing, are skipped with a warning.
 
 ### Registering what the model declares
 
@@ -2427,11 +2431,14 @@ Tracks iec61850-rust v0.4.0.
   `MAC-Address`) is disabled, reads a destination of six zero octets, and
   cannot be enabled; without a `<Communication>` section it keeps the
   default destination and can be enabled.
-- The SCL `<Communication>` section is read into the model: a malformed
-  `<P>` value, or a connected access point of the loaded IED naming what the
-  IED does not declare, raises `SclError`; a `<ConnectedAP>` of an IED the
-  file does not declare is skipped with a warning. `Scl.summary()` lists the
-  connected access points and GSE / SMV addresses.
+- The SCL `<Communication>` section is read into the model. A `<P>` value
+  written another way than its schema form is read with a warning; one that
+  cannot be read loads, reads `None` from its typed key, and leaves the GOOSE
+  control block it addresses without a destination. A connected access point
+  of the loaded IED naming what the IED does not declare raises `SclError`;
+  a `<ConnectedAP>` of an IED the file does not declare is skipped with a
+  warning. `Scl.summary()` lists the connected access points and GSE / SMV
+  addresses.
 - A client refused at Initiate raises `IedSessionRefusedError`; one refused
   for its calling identity or credentials raises `IedAuthenticationError`; a
   client refused by TLS gets the alert reason.
