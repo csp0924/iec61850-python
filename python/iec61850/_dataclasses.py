@@ -146,7 +146,20 @@ class ReportEntry:
 
 @dataclass(frozen=True, slots=True)
 class ClientReport:
-    """A report delivered to a callback registered via ``install_report_handler``."""
+    """A report delivered to a callback registered via ``install_report_handler``.
+
+    ``entries`` holds one entry per data set member: the value the report
+    carried, or the value an earlier report carried for a member this one
+    omits. ``included`` holds one flag per member, set when the inclusion
+    bitstring of this report carried the member's value.
+
+    A report too large for one PDU arrives as several segments, each
+    delivered as its own ``ClientReport`` with the same ``sequence_number``:
+    ``sub_seq_num`` counts the segments from zero, ``more_segments_follow``
+    is true on every segment but the last, and ``included`` marks only the
+    members of that segment. ``sub_seq_num`` is ``None`` for an unsegmented
+    report.
+    """
 
     rcb_reference: str
     rpt_id: str
@@ -157,6 +170,9 @@ class ClientReport:
     entry_id: bytes | None
     conf_rev: int | None
     entries: Sequence[ReportEntry]
+    included: tuple[bool, ...] = ()
+    sub_seq_num: int | None = None
+    more_segments_follow: bool = False
 
     @classmethod
     def from_native_dict(cls, d: Mapping[str, Any]) -> "ClientReport":
@@ -181,6 +197,9 @@ class ClientReport:
             entry_id=d.get("entry_id"),
             conf_rev=d.get("conf_rev"),
             entries=entries,
+            included=tuple(d.get("included", ())),
+            sub_seq_num=d.get("sub_seq_num"),
+            more_segments_follow=bool(d.get("more_segments_follow", False)),
         )
 
 

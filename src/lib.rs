@@ -3017,6 +3017,18 @@ fn client_report_to_pydict<'py>(
     }
     d.set_item("data_references", refs)?;
 
+    d.set_item("included", report.included.clone())?;
+    d.set_item(
+        "sub_seq_num",
+        report.segmentation.map(|seg| seg.sub_seq_num),
+    )?;
+    d.set_item(
+        "more_segments_follow",
+        report
+            .segmentation
+            .is_some_and(|seg| seg.more_segments_follow),
+    )?;
+
     Ok(d)
 }
 
