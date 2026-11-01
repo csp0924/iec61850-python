@@ -84,6 +84,7 @@ use iec61850_server::logging::{
     InMemoryLogStorage as RustInMemoryLogStorage, LogControl as RustLogControl,
     LogControlBlock as RustLogControlBlock, LogStorage as RustLogStorage,
 };
+use iec61850_server::policy::WriteAccessPolicies as RustWriteAccessPolicies;
 use iec61850_server::reporting::{
     Brcb as RustBrcb, BufferedReportControl as RustBufferedReportControl, Dataset as RustDataset,
     DatasetEntry as RustDatasetEntry, OptFlds as RustServerOptFlds, Rcb as RustRcb,
@@ -6052,6 +6053,48 @@ impl PyIedServer {
             }
         };
         self.with_pending_config("set_edition", |config| config.edition = value)
+    }
+
+    /// Allow or refuse remote writes under one functional constraint.
+    ///
+    /// `fc` is one of the constraints a client may be allowed to write:
+    /// ``"DC"``, ``"CF"``, ``"SP"``, ``"SV"``, ``"SE"`` or ``"BL"``. By
+    /// default ``SP``, ``SV`` and ``SE`` are allowed. A refused write fails
+    /// with ``ObjectAccessDenied`` before any ``on_write`` handler runs.
+    ///
+    /// Only valid before `start()`. Raises `ValueError` for an unknown token
+    /// or a constraint that is never writable, such as ``"ST"`` or ``"MX"``.
+    fn set_write_access_policy(&self, fc: &str, allow: bool) -> PyResult<()> {
+        let caller = "set_write_access_policy";
+        let fc = parse_fc(fc)?;
+        let mut probe = RustWriteAccessPolicies::default_policy();
+        probe.set(fc, true);
+        if !probe.is_allowed(fc) {
+            return Err(PyValueError::new_err(format!(
+                "{caller}: FC {} is never writable (allowed: DC, CF, SP, SV, SE, BL)",
+                fc.as_str()
+            )));
+        }
+        self.with_pending_config(caller, |config| {
+            config.write_access_policies.set(fc, allow);
+        })
+    }
+
+    /// Whether remote writes are allowed under the functional constraint
+    /// `fc`, before `start()` as the server will start and while running as
+    /// it does. A constraint that is never writable returns ``False``; an
+    /// unknown token raises `ValueError`.
+    fn write_access_allowed(&self, fc: &str) -> PyResult<bool> {
+        let fc = parse_fc(fc)?;
+        match &*self.state.lock().unwrap() {
+            ServerState::NotStarted { config, .. } => {
+                Ok(config.write_access_policies.is_allowed(fc))
+            }
+            ServerState::Running { server, .. } => Ok(server.write_access_allowed(fc)),
+            ServerState::Stopped => Err(PyRuntimeError::new_err(
+                "write_access_allowed: server has been stopped",
+            )),
+        }
     }
 
     #[setter]

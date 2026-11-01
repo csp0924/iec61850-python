@@ -607,3 +607,67 @@ async def test_setting_group_value_of_an_ld_without_sgcb_raises() -> None:
     async with server:
         with pytest.raises(KeyError, match="has no SGCB"):
             server.get_setting_group_value("GenericIO/GGIO1.Ind1.stVal", 1)
+
+
+# ── write access policy ─────────────────────────────────────────────────────
+
+CFG_REF = f"{_demo.WRITABLE_DOMAIN}/GGIO1.Cfg.setVal"
+
+
+def _policy_server() -> IedServer:
+    """The writable model plus an Int32 under FC=CF."""
+    spec = _demo.writable_spec()
+    spec["lds"][0]["lns"][1]["dos"].append(
+        {"name": "Cfg", "das": [{"name": "setVal", "fc": "CF", "type": "Int32"}]}
+    )
+    server = IedServer.from_model_spec(spec)
+    server.bind("127.0.0.1:0")
+    return server
+
+
+def test_write_access_defaults_and_refusals() -> None:
+    server = _policy_server()
+    assert server.write_access_allowed("SP") is True
+    assert server.write_access_allowed("SV") is True
+    assert server.write_access_allowed("SE") is True
+    assert server.write_access_allowed("CF") is False
+    assert server.write_access_allowed("ST") is False
+    with pytest.raises(ValueError, match="invalid FC token"):
+        server.write_access_allowed("XX")
+    with pytest.raises(ValueError, match="never writable"):
+        server.set_write_access_policy("ST", True)
+    with pytest.raises(ValueError, match="invalid FC token"):
+        server.set_write_access_policy("XX", True)
+
+
+async def test_write_access_policy_set_before_start_applies() -> None:
+    server = _policy_server()
+    server.set_write_access_policy("CF", True)
+    assert server.write_access_allowed("CF") is True
+    async with server:
+        assert server.write_access_allowed("CF") is True
+        conn = await IedConnection.connect(server.bound_addr)
+        try:
+            await conn.write_int32(CFG_REF, FC.CF, 5)
+            assert await conn.read_int32(CFG_REF, FC.CF) == 5
+        finally:
+            await conn.disconnect()
+
+
+async def test_write_access_policy_refusing_sp_blocks_client_writes() -> None:
+    server = _policy_server()
+    server.set_write_access_policy("SP", False)
+    async with server:
+        assert server.write_access_allowed("SP") is False
+        assert server.write_access_allowed("SV") is True
+        conn = await IedConnection.connect(server.bound_addr)
+        try:
+            with pytest.raises(IedDataAccessError):
+                await conn.write_int32(_demo.WRITABLE_SETPOINT, FC.SP, 2)
+            with pytest.raises(IedDataAccessError):
+                await conn.write_int32(CFG_REF, FC.CF, 5)
+            assert await conn.read_int32(_demo.WRITABLE_SETPOINT, FC.SP) == 0
+        finally:
+            await conn.disconnect()
+        with pytest.raises(RuntimeError, match="cannot reconfigure after start"):
+            server.set_write_access_policy("SP", True)
