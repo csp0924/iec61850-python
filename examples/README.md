@@ -28,7 +28,7 @@ over loopback.
 
 | Path | Role |
 |---|---|
-| `_shared.py` | `DEMO` — frozen `DemoPaths` dataclass with every reference. `spawn_demo()` — async context manager that loads the CID, wires the control blocks it declares, binds, and yields a running `IedServer`. |
+| `_shared.py` | `DEMO` — frozen `DemoPaths` dataclass with every reference. `spawn_demo()` — async context manager that loads the CID (optionally edited by `edit_scl`), wires the control blocks it declares, binds, and yields a running `IedServer`. |
 | `../models/demo.cid` | The demonstration IED: measurands, four status points, one controllable point, two data sets, an unbuffered and a buffered report control block, a GOOSE control block. |
 | `../models/README.md` | Field map for `demo.cid`. |
 
@@ -41,12 +41,12 @@ over loopback.
 | `03_host_server_from_scl.py` | smallest hosting recipe; `async with spawn_demo()` |
 | `04_host_server_programmatic.py` | `IedServer.from_model_spec(dict)`, composable spec builders, `on_write` plus a client write round-trip |
 | `05_control_direct_operate.py` | direct-normal control, `OriginValue`, server-side handler updates cache |
-| `06_control_select_operate.py` | SBO with togglable interlock and cancel; `Interlock` dataclass owns the flag |
-| `07_reporting_unbuffered.py` | `urcbMeas`, `asyncio.Queue` for callback delivery, background pump task |
-| `08_reporting_buffered.py` | `brcbMeas` + `Iec61850Client(report_dispatcher_interval_ms=…)` |
+| `06_control_select_operate.py` | SBO with togglable interlock and cancel; `select()` returns a `ControlOutcome`; the `LastApplError` of a refused operate; `Interlock` dataclass owns the flag |
+| `07_reporting_unbuffered.py` | `urcbMeas`, `asyncio.Queue` for callback delivery, background pump task, `ClientReport.included` |
+| `08_reporting_buffered.py` | `brcbMeas` + `Iec61850Client(report_dispatcher_interval_ms=…)`, `EntryID`, `BufOvfl` on the first report after enabling |
 | `09_dataset_dynamic.py` | data set CRUD wrapped in `@asynccontextmanager` for lifetime safety |
 | `10_setting_groups.py` | SGCB ActSG / EditSG / CnfEdit; `Auditor` dataclass records every transition |
-| `11_journal_log.py` | LCB writes + `query_journal_by_time`, ring-buffer eviction |
+| `11_journal_log.py` | LCB writes, journal named by its LogRef, `query_journal` / `query_journal_all` with a `JournalQuery`, ring-buffer eviction |
 | `12_tls_secured_session.py` | mutual TLS with throw-away self-signed identities; `Identity` dataclass |
 | `13_sntp_time_sync.py` | `query_sntp`, typed `SntpResponse`, formatted readout |
 | `14_dataset_directory_batch_read.py` | `get_data_set_directory` member list, `read_multiple` in one round trip, `DataAccessFailure` markers, cloning a data set |
