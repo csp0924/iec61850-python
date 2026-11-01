@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 from pathlib import Path
 
 import pytest
@@ -164,6 +165,27 @@ async def test_start_stop_cycle() -> None:
     await s.stop()
     assert not s.is_running
     assert "stopped" in repr(s)
+
+
+async def test_reclaiming_a_started_server_frees_its_port() -> None:
+    """A started server that is never stopped releases its port once the
+    object is reclaimed: a new server binds the same address."""
+    s = IedServer.from_scl_str(SERVER_SCL, ied_name="IED1")
+    s.bind("127.0.0.1:0")
+    await s.start()
+    addr = s.bound_addr
+    del s
+    gc.collect()
+
+    again = IedServer.from_scl_str(SERVER_SCL, ied_name="IED1")
+    again.bind(addr)
+    await again.start()
+    try:
+        assert again.bound_addr == addr
+        conn = await IedConnection.connect(addr)
+        await conn.disconnect()
+    finally:
+        await again.stop()
 
 
 async def test_double_start_raises() -> None:

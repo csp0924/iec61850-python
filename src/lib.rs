@@ -4309,6 +4309,12 @@ async fn server_do_stop(state_arc: &Arc<std::sync::Mutex<ServerState>>) -> PyRes
 ///
 /// While running, push value updates with the typed `update_*` methods,
 /// addressing data attributes by `"<LD>/<LN>.<DO>.<DA>[.<sub>]*"`.
+///
+/// A running server that is reclaimed without `stop()` stops listening and
+/// frees its port. The callbacks a server holds are kept on the native side,
+/// out of sight of the cycle collector, so a callback that refers to the
+/// server keeps it alive and listening until `stop()` is called or the
+/// `async with` block ends.
 #[pyclass(name = "IedServer", module = "iec61850._native", frozen)]
 struct PyIedServer {
     state: Arc<std::sync::Mutex<ServerState>>,
@@ -4596,6 +4602,45 @@ impl PyIedServer {
         Ok(format!("{ln}${}${}", da.fc.as_str(), tail.join("$")))
     }
 }
+
+impl Drop for PyIedServer {
+    /// A running server whose Python object is reclaimed stops listening:
+    /// the accept and tick loops are told to exit and every association is
+    /// aborted. Off the runtime's threads the drop waits, with the GIL
+    /// released, until the listener is closed, so the port is free once the
+    /// object is gone.
+    fn drop(&mut self) {
+        let handle = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            match std::mem::replace(&mut *state, ServerState::Stopped) {
+                ServerState::Running { handle, .. } => handle,
+                other => {
+                    *state = other;
+                    None
+                }
+            }
+        };
+        let Some(handle) = handle else {
+            return;
+        };
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        pyo3_async_runtimes::tokio::get_runtime().spawn(async move {
+            handle.stop().await;
+            let _ = done_tx.send(());
+        });
+        if tokio::runtime::Handle::try_current().is_ok() {
+            return;
+        }
+        Python::attach(|py| {
+            py.detach(move || {
+                let _ = done_rx.recv_timeout(SERVER_DROP_STOP_TIMEOUT);
+            })
+        });
+    }
+}
+
+/// Longest a reclaimed running server waits for its listener to close.
+const SERVER_DROP_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Raises `ValueError` naming `caller` when `group` is outside 1 through the
 /// group count of `rt`.
