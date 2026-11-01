@@ -556,6 +556,18 @@ whitelist, time validation on, session resumption on. Set
 for closed-network commissioning, or `time_validation=False` to accept a
 certificate outside its validity period (chain validation still applies).
 
+The cipher suites are fixed to the IEC 62351-3 list the underlying TLS
+library implements, on the client and on the hosted server alike, and no
+argument adds or removes one:
+
+| Version | Cipher suites |
+|---------|---------------|
+| TLS 1.2 | `TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256`, `TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384`, `TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256`, `TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384` |
+| TLS 1.3 | `TLS13_AES_128_GCM_SHA256`, `TLS13_AES_256_GCM_SHA384` |
+
+The `TLS_DHE_RSA_*` suites IEC 62351-3 also permits are not offered, so a
+peer that supports only those fails the handshake.
+
 ### Pinned peers, CRL, version pinning
 
 ```python
@@ -1253,8 +1265,9 @@ server.with_tls(
 )
 ```
 
-Defaults: TLS 1.2 - 1.3, IEC 62351-3 cipher whitelist, time validation
-on, session resumption on, no client-cert pinning; a client certificate
+Defaults: TLS 1.2 - 1.3, the IEC 62351-3 cipher suites listed under
+[TLS](#tls), time validation on, session resumption on, no client-cert
+pinning; a client certificate
 chain is always validated against `client_ca_pem`. `min_tls_version` and
 `max_tls_version` accept `"tls1.2"` / `"tls1.3"`.
 
