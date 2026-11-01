@@ -192,6 +192,7 @@ class IedConnection:
         max_outstanding: int | None = ...,
         local_max_pdu_size: int | None = ...,
         iso: dict[str, Any] | None = ...,
+        max_name_list_names: int | None = ...,
     ) -> Awaitable[IedConnection]: ...
     @classmethod
     def connect_tls(
@@ -214,6 +215,7 @@ class IedConnection:
         max_outstanding: int | None = ...,
         local_max_pdu_size: int | None = ...,
         iso: dict[str, Any] | None = ...,
+        max_name_list_names: int | None = ...,
     ) -> Awaitable[IedConnection]: ...
     def disconnect(self) -> Awaitable[None]: ...
     def abort(self) -> Awaitable[None]: ...

@@ -673,7 +673,8 @@ class Iec61850ClientConfig:
     ``request_timeout_ms`` / ``max_outstanding`` / ``local_max_pdu_size`` apply
     after the connection is established and tune per-request behavior. ``iso``
     replaces the ISO addressing the association offers; ``None`` keeps the
-    ``IsoConnectionParameters`` defaults.
+    ``IsoConnectionParameters`` defaults. ``max_name_list_names`` caps the
+    names one directory walk collects; ``None`` keeps the default cap.
     """
 
     address: str
@@ -686,6 +687,7 @@ class Iec61850ClientConfig:
     tls_server_name: str | None = None
     report_dispatcher_interval_ms: int | None = 100
     iso: IsoConnectionParameters | None = None
+    max_name_list_names: int | None = None
 
 
 # TypeSpec is a recursive MMS type descriptor surfaced as a nested dict.

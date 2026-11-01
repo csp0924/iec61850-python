@@ -449,11 +449,17 @@ class IedConnection:
         max_outstanding: int | None = None,
         local_max_pdu_size: int | None = None,
         iso: IsoConnectionParameters | None = None,
+        max_name_list_names: int | None = None,
     ) -> "IedConnection":
         """Open an association with ``addr``, given as ``"host:port"``.
 
         ``iso`` replaces the ISO addressing the association offers; ``None``
         keeps the ``IsoConnectionParameters`` defaults.
+        ``max_name_list_names`` caps the names one directory walk (the
+        ``get_*_directory`` and ``get_device_model`` services) collects, which
+        bounds the memory a server can make the client hold; a walk past it
+        raises ``IedServiceError`` with ``reason == "name-list-limit"`` and
+        the cap as ``limit``. ``None`` keeps the default cap.
         """
         native = await _native.IedConnection.connect(
             addr,
@@ -462,6 +468,7 @@ class IedConnection:
             max_outstanding=max_outstanding,
             local_max_pdu_size=local_max_pdu_size,
             iso=iso.to_native() if iso is not None else None,
+            max_name_list_names=max_name_list_names,
         )
         self = cls.__new__(cls)
         self._native_conn = native
@@ -479,11 +486,14 @@ class IedConnection:
         max_outstanding: int | None = None,
         local_max_pdu_size: int | None = None,
         iso: IsoConnectionParameters | None = None,
+        max_name_list_names: int | None = None,
     ) -> "IedConnection":
         """Open a TLS-protected association with ``addr``.
 
         ``iso`` replaces the ISO addressing the association offers; ``None``
         keeps the ``IsoConnectionParameters`` defaults.
+        ``max_name_list_names`` caps the names one directory walk collects, as
+        for :meth:`connect`.
         """
         native = await _native.IedConnection.connect_tls(
             addr,
@@ -503,6 +513,7 @@ class IedConnection:
             max_outstanding=max_outstanding,
             local_max_pdu_size=local_max_pdu_size,
             iso=iso.to_native() if iso is not None else None,
+            max_name_list_names=max_name_list_names,
         )
         self = cls.__new__(cls)
         self._native_conn = native
@@ -1016,6 +1027,7 @@ class Iec61850Client:
             "max_outstanding": cfg.max_outstanding,
             "local_max_pdu_size": cfg.local_max_pdu_size,
             "iso": cfg.iso,
+            "max_name_list_names": cfg.max_name_list_names,
         }
         if cfg.tls is None:
             conn = await IedConnection.connect(addr, **tuning)

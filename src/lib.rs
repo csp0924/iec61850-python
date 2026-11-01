@@ -796,13 +796,15 @@ fn build_tls_acceptor(pt: &PendingTls) -> PyResult<iec61850_tls::TlsAcceptor> {
 
 /// Build an `IedConnection` whose underlying MMS client carries the requested
 /// per-request tuning (request timeout, max outstanding invocations, locally
-/// declared max PDU size) and the ISO addressing the association offers.
-/// `None` leaves the corresponding default in place.
+/// declared max PDU size), the ISO addressing the association offers, and the
+/// most names one directory walk collects. `None` leaves the corresponding
+/// default in place.
 fn build_ied_connection(
     request_timeout_ms: Option<u64>,
     max_outstanding: Option<u16>,
     local_max_pdu_size: Option<u32>,
     iso: Option<RustIsoConnectionParameters>,
+    max_name_list_names: Option<usize>,
 ) -> RustIedConnection {
     let mut builder = iec61850_mms::MmsClientBuilder::new();
     if let Some(t) = request_timeout_ms {
@@ -817,7 +819,11 @@ fn build_ied_connection(
     if let Some(params) = iso {
         builder = builder.iso_parameters(params);
     }
-    RustIedConnection::with_mms_client(builder.build())
+    let conn = RustIedConnection::with_mms_client(builder.build());
+    match max_name_list_names {
+        Some(n) => conn.with_max_name_list_names(n),
+        None => conn,
+    }
 }
 
 /// Python-side handle for an IEC 61850 MMS client connection.
@@ -838,6 +844,9 @@ impl PyIedConnection {
     /// `timeout_ms` wraps the entire connect handshake. The optional
     /// `request_timeout_ms` / `max_outstanding` / `local_max_pdu_size` tune
     /// the underlying MMS client for after the connection is established.
+    /// `max_name_list_names` caps the names one directory walk collects; a
+    /// walk past it raises `IedServiceError` with `reason ==
+    /// "name-list-limit"`.
     #[classmethod]
     #[pyo3(signature = (
         addr,
@@ -847,6 +856,7 @@ impl PyIedConnection {
         max_outstanding = None,
         local_max_pdu_size = None,
         iso = None,
+        max_name_list_names = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn connect<'py>(
@@ -858,12 +868,18 @@ impl PyIedConnection {
         max_outstanding: Option<u16>,
         local_max_pdu_size: Option<u32>,
         iso: Option<Bound<'py, PyDict>>,
+        max_name_list_names: Option<usize>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let (host, port) = parse_addr(&addr)?;
         let iso = iso.map(|d| iso_params_from_dict(&d)).transpose()?;
         future_into_py(py, async move {
-            let conn =
-                build_ied_connection(request_timeout_ms, max_outstanding, local_max_pdu_size, iso);
+            let conn = build_ied_connection(
+                request_timeout_ms,
+                max_outstanding,
+                local_max_pdu_size,
+                iso,
+                max_name_list_names,
+            );
             let deadline = std::time::Duration::from_millis(timeout_ms);
             tokio::time::timeout(deadline, conn.connect(&host, port))
                 .await
@@ -886,7 +902,8 @@ impl PyIedConnection {
     /// hostname matching. ``known_peer_pems`` + ``allow_only_known_peers``
     /// pin specific server certificates (IEC 62351-3 known-peer profile).
     /// ``min_tls_version`` / ``max_tls_version`` accept ``"tls1.2"`` or
-    /// ``"tls1.3"``.
+    /// ``"tls1.3"``. ``max_name_list_names`` caps the names one directory
+    /// walk collects, as for ``connect``.
     #[classmethod]
     #[pyo3(signature = (
         addr,
@@ -907,6 +924,7 @@ impl PyIedConnection {
         max_outstanding = None,
         local_max_pdu_size = None,
         iso = None,
+        max_name_list_names = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn connect_tls<'py>(
@@ -929,6 +947,7 @@ impl PyIedConnection {
         max_outstanding: Option<u16>,
         local_max_pdu_size: Option<u32>,
         iso: Option<Bound<'py, PyDict>>,
+        max_name_list_names: Option<usize>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let (host, port) = parse_addr(&addr)?;
         let iso = iso.map(|d| iso_params_from_dict(&d)).transpose()?;
@@ -957,8 +976,13 @@ impl PyIedConnection {
             let socket_addr = addrs.next().ok_or_else(|| {
                 IedConnectionError::new_err(format!("no address for {host}:{port}"))
             })?;
-            let conn =
-                build_ied_connection(request_timeout_ms, max_outstanding, local_max_pdu_size, iso);
+            let conn = build_ied_connection(
+                request_timeout_ms,
+                max_outstanding,
+                local_max_pdu_size,
+                iso,
+                max_name_list_names,
+            );
             tokio::time::timeout(deadline, conn.connect_tls(socket_addr, &connector, sni))
                 .await
                 .map_err(|_| {
