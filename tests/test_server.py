@@ -1607,3 +1607,98 @@ async def test_from_model_spec_sgcb_force_active() -> None:
         s.force_active_setting_group("GenericIO", 2)
         info = s.get_setting_group_info("GenericIO")
         assert info["act_sg"] == 2
+
+
+async def test_from_model_spec_accepts_the_0_4_type_names() -> None:
+    """`Int24`, `SvOptFlds` and `LogOptFlds` build and are served."""
+    spec = {
+        "ied_name": "TyIED",
+        "lds": [
+            {
+                "inst": "LD0",
+                "lns": [
+                    {"lln0": True, "dos": []},
+                    {
+                        "class": "GGIO",
+                        "inst": "1",
+                        "dos": [
+                            {
+                                "name": "Ind1",
+                                "das": [
+                                    {"name": "i24", "fc": "ST", "type": "Int24"},
+                                    {"name": "svOpt", "fc": "CF", "type": "SvOptFlds"},
+                                    {"name": "logOpt", "fc": "CF", "type": "LogOptFlds"},
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            },
+        ],
+    }
+    s = IedServer.from_model_spec(spec)
+    s.bind("127.0.0.1:0")
+    async with s:
+        conn = await IedConnection.connect(s.bound_addr)
+        try:
+            names = await conn.get_data_directory("TyIEDLD0/GGIO1.Ind1")
+            assert set(names) >= {"i24", "svOpt", "logOpt"}
+        finally:
+            await conn.disconnect()
+
+
+async def test_from_model_spec_rcb_is_not_indexed_unless_asked() -> None:
+    """A spec RCB keeps its name; `indexed=True` numbers its instances."""
+    from iec61850 import AcsiClass
+
+    def spec(rcb: dict) -> dict:
+        return {
+            "ied_name": "RcIED",
+            "lds": [
+                {
+                    "inst": "LD0",
+                    "lns": [
+                        {
+                            "lln0": True,
+                            "dos": [
+                                {
+                                    "name": "Mod",
+                                    "das": [
+                                        {"name": "stVal", "fc": "ST", "type": "Int32"},
+                                    ],
+                                },
+                            ],
+                            "datasets": [
+                                {
+                                    "name": "ds1",
+                                    "entries": [
+                                        {"ln_name": "LLN0", "fc": "ST", "do_path": ["Mod"]},
+                                    ],
+                                },
+                            ],
+                            "rcbs": [rcb],
+                        },
+                    ],
+                },
+            ],
+        }
+
+    async def served_names(rcb: dict) -> list[str]:
+        server = IedServer.from_model_spec(spec(rcb))
+        server.bind("127.0.0.1:0")
+        async with server:
+            server.register_from_model()
+            conn = await IedConnection.connect(server.bound_addr)
+            try:
+                return sorted(
+                    await conn.get_logical_node_directory(
+                        "RcIEDLD0/LLN0", AcsiClass.REPORT
+                    )
+                )
+            finally:
+                await conn.disconnect()
+
+    assert await served_names({"name": "rpt", "dataset_ref": "LLN0$ds1"}) == ["rpt"]
+    assert await served_names(
+        {"name": "rpt", "dataset_ref": "LLN0$ds1", "indexed": True, "max_instances": 2}
+    ) == ["rpt01", "rpt02"]

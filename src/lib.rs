@@ -5699,6 +5699,7 @@ fn da_type_from_token(
         "Boolean" => T::Boolean,
         "Int8" => T::Int8,
         "Int16" => T::Int16,
+        "Int24" => T::Int24,
         "Int32" => T::Int32,
         "Int64" => T::Int64,
         "Int128" => T::Int128,
@@ -5723,6 +5724,8 @@ fn da_type_from_token(
         "Currency" => T::Currency,
         "OptFlds" => T::OptFlds,
         "TrgOpsBits" => T::TrgOpsBits,
+        "SvOptFlds" => T::SvOptFlds,
+        "LogOptFlds" => T::LogOptFlds,
         other => {
             return Err(PyValueError::new_err(format!(
                 "from_model_spec: {ctx}.type '{other}' is not a known DataAttributeType"
