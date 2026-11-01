@@ -90,7 +90,8 @@ use iec61850_server::reporting::{
     ReportControl as RustReportControl, TriggerOptions as RustServerTriggerOptions,
 };
 use iec61850_server::setting_groups::{
-    SettingGroupHandler as RustSettingGroupHandler, SgcbSnapshot as RustSgcbSnapshot,
+    SettingGroupHandler as RustSettingGroupHandler, SettingGroupRuntime as RustSettingGroupRuntime,
+    SgcbSnapshot as RustSgcbSnapshot,
 };
 use iec61850_server::{DataModelGuard as RustDataModelGuard, IedServer as RustIedServer};
 use iec61850_sntp::{SntpClient as RustSntpClient, SntpError as RustSntpError};
@@ -4138,6 +4139,39 @@ impl PyIedServer {
         }
     }
 
+    /// Resolve `path` to its data attribute and the setting group runtime of
+    /// its logical device. Requires the server to be running.
+    fn setting_group_runtime(
+        &self,
+        caller: &str,
+        path: &str,
+    ) -> PyResult<(Arc<RustSettingGroupRuntime>, &RustDataAttribute)> {
+        let ptr = self
+            .path_index
+            .get(path)
+            .copied()
+            .ok_or_else(|| PyKeyError::new_err(format!("{caller}: path '{path}' not found")))?;
+        // SAFETY: see `DaPtr` invariant — `self.model` pins the tree alive.
+        let da: &RustDataAttribute = unsafe { &*ptr.0 };
+        let (ld_inst, _) = path.split_once('/').ok_or_else(|| {
+            PyValueError::new_err(format!("{caller}: path '{path}' missing '<LD>/' prefix"))
+        })?;
+        let domain = self.resolve_ld_domain(caller, ld_inst)?;
+        let server = match &*self.state.lock().unwrap() {
+            ServerState::Running { server, .. } => Arc::clone(server),
+            _ => {
+                return Err(PyRuntimeError::new_err(format!(
+                    "{caller}: server is not running"
+                )));
+            }
+        };
+        let rt = server
+            .setting_groups()
+            .lookup(&domain)
+            .ok_or_else(|| PyKeyError::new_err(format!("{caller}: LD '{ld_inst}' has no SGCB")))?;
+        Ok((rt, da))
+    }
+
     /// Translate a user-facing `"LD/LN.DO.DA[.sub]*"` path into the
     /// canonical handler key `"LN$FC$DO[$DA]*"` used by the server-side
     /// handler registry. Returns `KeyError` if the DA is unknown.
@@ -4164,6 +4198,18 @@ impl PyIedServer {
         }
         Ok(format!("{ln}${}${}", da.fc.as_str(), tail.join("$")))
     }
+}
+
+/// Raises `ValueError` naming `caller` when `group` is outside 1 through the
+/// group count of `rt`.
+fn check_setting_group(caller: &str, rt: &RustSettingGroupRuntime, group: u8) -> PyResult<()> {
+    let num_of_sg = rt.snapshot().num_of_sg;
+    if group < 1 || group > num_of_sg {
+        return Err(PyValueError::new_err(format!(
+            "{caller}: group {group} is outside 1..={num_of_sg}"
+        )));
+    }
+    Ok(())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -7017,6 +7063,69 @@ impl PyIedServer {
                 } else {
                     PyValueError::new_err(format!("force_active_setting_group: {msg}"))
                 }
+            })
+    }
+
+    /// Value setting group `group` holds for the setting at `path`.
+    ///
+    /// `path` addresses the FC=SG or FC=SE leaf attribute of a setting,
+    /// ``"<LD>/<LN>.<DO>.<DA>[.<sub>]*"``, in a logical device whose LLN0
+    /// declares a setting group control block. The value is converted as
+    /// ``on_write`` delivers values. Raises `KeyError` when the path is
+    /// unknown, its LD has no SGCB, or it is not such a setting,
+    /// `ValueError` when `group` is outside 1 through the group count, and
+    /// `RuntimeError` when the server is not running.
+    fn get_setting_group_value<'py>(
+        &self,
+        py: Python<'py>,
+        path: &str,
+        group: u8,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let caller = "get_setting_group_value";
+        let (rt, da) = self.setting_group_runtime(caller, path)?;
+        check_setting_group(caller, &rt, group)?;
+        let value = rt.group_value(group, da).ok_or_else(|| {
+            PyKeyError::new_err(format!(
+                "{caller}: '{path}' is not an FC=SG or FC=SE setting"
+            ))
+        })?;
+        Ok(mms_value_to_pyobject(py, &value)?.into_bound(py))
+    }
+
+    /// Replace the value setting group `group` holds for the setting at
+    /// `path`, as an application restoring persisted values does. When
+    /// `group` is the active group, the FC=SG attribute takes the value too.
+    ///
+    /// `value` is a plain value of the type the setting holds or a tagged
+    /// ``dict`` as ``from_model_spec`` takes it. Raises `KeyError` when the
+    /// path is unknown, its LD has no SGCB, or it is not an FC=SG or FC=SE
+    /// setting, `ValueError` when `group` is outside 1 through the group
+    /// count or `value` does not convert, `IedDataAccessError` when `value`
+    /// is not of the type the setting holds, and `RuntimeError` when the
+    /// server is not running.
+    fn set_setting_group_value(
+        &self,
+        path: &str,
+        group: u8,
+        value: Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        let caller = "set_setting_group_value";
+        let (rt, da) = self.setting_group_runtime(caller, path)?;
+        check_setting_group(caller, &rt, group)?;
+        let value = py_value_to_mms_value_shaped(&value, da, &format!("{caller}: value"))?;
+        rt.set_group_value(group, da, value)
+            .map_err(|err| match err {
+                RustDataAccessError::ObjectNonExistent => PyKeyError::new_err(format!(
+                    "{caller}: '{path}' is not an FC=SG or FC=SE setting"
+                )),
+                RustDataAccessError::ObjectValueInvalid => PyValueError::new_err(format!(
+                    "{caller}: group {group} is outside 1..={}",
+                    rt.snapshot().num_of_sg
+                )),
+                other => IedDataAccessError::new_err(format!(
+                    "{caller}: '{path}' refused the value: {}",
+                    data_access_name(other)
+                )),
             })
     }
 

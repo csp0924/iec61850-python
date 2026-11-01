@@ -483,3 +483,127 @@ async def test_set_edition_refuses_an_unknown_edition_and_a_started_server() -> 
     async with server:
         with pytest.raises(RuntimeError, match="set_edition: cannot reconfigure"):
             server.set_edition("ed2")
+
+
+# ── setting group values ────────────────────────────────────────────────────
+
+SG_SCL = """<?xml version="1.0" encoding="UTF-8"?>
+<SCL xmlns="http://www.iec.ch/61850/2003/SCL">
+  <IED name="IED1" manufacturer="ACME">
+    <AccessPoint name="AP1">
+      <Server>
+        <LDevice inst="GenericIO">
+          <LN0 lnClass="LLN0" inst="" lnType="LLN0_0">
+            <SettingControl numOfSGs="3" actSG="1"/>
+          </LN0>
+          <LN prefix="" lnClass="GGIO" inst="1" lnType="GGIO_1">
+            <DOI name="SetPt1">
+              <DAI name="setVal">
+                <Val sGroup="1">10</Val>
+                <Val sGroup="2">20</Val>
+                <Val sGroup="3">30</Val>
+              </DAI>
+            </DOI>
+          </LN>
+        </LDevice>
+      </Server>
+    </AccessPoint>
+  </IED>
+  <DataTypeTemplates>
+    <LNodeType id="LLN0_0" lnClass="LLN0">
+      <DO name="Mod" type="ENC_1"/>
+    </LNodeType>
+    <LNodeType id="GGIO_1" lnClass="GGIO">
+      <DO name="Ind1" type="SPS_1"/>
+      <DO name="SetPt1" type="ING_1"/>
+    </LNodeType>
+    <DOType id="ENC_1" cdc="ENC">
+      <DA name="stVal" fc="ST" bType="Enum" type="BehaviourKind"/>
+    </DOType>
+    <DOType id="SPS_1" cdc="SPS">
+      <DA name="stVal" fc="ST" bType="BOOLEAN"/>
+    </DOType>
+    <DOType id="ING_1" cdc="ING">
+      <DA name="setVal" fc="SG" bType="INT32"/>
+    </DOType>
+    <EnumType id="BehaviourKind">
+      <EnumVal ord="1">on</EnumVal>
+    </EnumType>
+  </DataTypeTemplates>
+</SCL>
+"""
+
+SG_SETTING = "GenericIO/GGIO1.SetPt1.setVal"
+SG_SETTING_REF = "IED1GenericIO/GGIO1.SetPt1.setVal"
+
+
+def _sg_server() -> IedServer:
+    server = IedServer.from_scl_str(SG_SCL, ied_name="IED1")
+    server.bind("127.0.0.1:0")
+    return server
+
+
+async def test_get_setting_group_value_reads_each_group() -> None:
+    server = _sg_server()
+    async with server:
+        assert [server.get_setting_group_value(SG_SETTING, g) for g in (1, 2, 3)] == [
+            10,
+            20,
+            30,
+        ]
+
+
+async def test_set_setting_group_value_of_the_active_group_reaches_clients() -> None:
+    server = _sg_server()
+    async with server:
+        conn = await IedConnection.connect(server.bound_addr)
+        try:
+            assert await conn.read_int32(SG_SETTING_REF, FC.SG) == 10
+            server.set_setting_group_value(SG_SETTING, 1, 11)
+            assert server.get_setting_group_value(SG_SETTING, 1) == 11
+            assert await conn.read_int32(SG_SETTING_REF, FC.SG) == 11
+        finally:
+            await conn.disconnect()
+
+
+async def test_set_setting_group_value_of_an_inactive_group_waits_for_activation() -> None:
+    server = _sg_server()
+    async with server:
+        conn = await IedConnection.connect(server.bound_addr)
+        try:
+            server.set_setting_group_value(SG_SETTING, 2, {"type": "int", "value": 22})
+            assert await conn.read_int32(SG_SETTING_REF, FC.SG) == 10
+            server.force_active_setting_group("GenericIO", 2)
+            assert await conn.read_int32(SG_SETTING_REF, FC.SG) == 22
+        finally:
+            await conn.disconnect()
+
+
+async def test_setting_group_value_refusals() -> None:
+    server = _sg_server()
+    with pytest.raises(RuntimeError, match="not running"):
+        server.get_setting_group_value(SG_SETTING, 1)
+    async with server:
+        for group in (0, 4):
+            with pytest.raises(ValueError, match=r"outside 1\.\.=3"):
+                server.get_setting_group_value(SG_SETTING, group)
+            with pytest.raises(ValueError, match=r"outside 1\.\.=3"):
+                server.set_setting_group_value(SG_SETTING, group, 1)
+        with pytest.raises(KeyError, match="not an FC=SG or FC=SE setting"):
+            server.get_setting_group_value("GenericIO/GGIO1.Ind1.stVal", 1)
+        with pytest.raises(KeyError, match="not an FC=SG or FC=SE setting"):
+            server.set_setting_group_value("GenericIO/GGIO1.Ind1.stVal", 1, True)
+        with pytest.raises(KeyError, match="not found"):
+            server.get_setting_group_value("GenericIO/GGIO1.Nope.setVal", 1)
+        with pytest.raises(ValueError, match="must be an i64"):
+            server.set_setting_group_value(SG_SETTING, 1, "eleven")
+        with pytest.raises(IedDataAccessError, match="TypeInconsistent"):
+            server.set_setting_group_value(SG_SETTING, 1, {"type": "float32", "value": 1.0})
+        assert server.get_setting_group_value(SG_SETTING, 1) == 10
+
+
+async def test_setting_group_value_of_an_ld_without_sgcb_raises() -> None:
+    server = _array_server()
+    async with server:
+        with pytest.raises(KeyError, match="has no SGCB"):
+            server.get_setting_group_value("GenericIO/GGIO1.Ind1.stVal", 1)
