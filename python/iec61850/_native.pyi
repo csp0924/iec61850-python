@@ -129,7 +129,13 @@ def load_scl(path: str | os.PathLike[str]) -> Scl:
 
 def query_sntp(server: str, timeout_s: float = 3.0) -> Awaitable[dict[str, Any]]:
     """Query an SNTP/NTP server. Returns a dict — wrap with
-    :class:`iec61850.SntpResponse` for a typed result."""
+    :class:`iec61850.SntpResponse` for a typed result.
+
+    ``server`` is an IP address and port, ``"192.0.2.10:123"`` or
+    ``"[2001:db8::1]:123"``; a host name is not resolved and raises
+    ``ValueError``, as does a ``timeout_s`` that is not a positive finite
+    number.
+    """
 
 # ─── Native types used internally by ``_facade.py`` ─────────────────────────
 

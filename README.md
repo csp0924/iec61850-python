@@ -111,7 +111,8 @@ Rust crate.
   `IedServerError`; each carries attributes naming the cause
 - SNTP / NTP client: `query_sntp(addr, timeout_s)` returns an `SntpResponse`
   with server time, clock offset, and round-trip estimate computed per
-  RFC 4330 §5
+  RFC 4330 §5; `addr` is an IP address and port such as `"192.0.2.10:123"`
+  or `"[2001:db8::1]:123"`
 - Type stubs (`_native.pyi`) and a `py.typed` marker for full mypy / pyright
   coverage of the public surface
 - Cookbook of runnable examples under `examples/` (quickstart client, server
@@ -464,7 +465,10 @@ registers every controllable data object of the model.
    client side for time sync.
 10. SNTPv4 unicast client. From Python use `iec61850.query_sntp(addr,
     timeout_s)`; from Rust use `iec61850_sntp::SntpClient`. Single-sample
-    offset / round-trip via RFC 4330 §5 four-timestamp formula.
+    offset / round-trip via RFC 4330 §5 four-timestamp formula. `addr` is
+    an IP address with its port (`"192.0.2.10:123"`); a host name is not
+    resolved and raises `ValueError`, so resolve it first, for example with
+    `loop.getaddrinfo`.
 
 ### File Transfer (§23)
 
