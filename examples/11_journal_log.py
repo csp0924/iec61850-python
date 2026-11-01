@@ -6,7 +6,12 @@ sequence-of-events applications. The example also exercises the overflow
 path so you can see the oldest entries getting evicted.
 
 `models/demo.cid` declares no LCB, so the recipe registers one at runtime
-over the CID's status data set.
+over the CID's status data set. A client names the journal by the LCB's
+LogRef, not by the LCB. The server writes an entry by itself whenever a
+member of the data set changes; `log_value` adds entries with chosen
+timestamps, which the recipe uses so the time window below is stable.
+`query_journal` sends one ReadJournal request; `query_journal_all` follows
+`more_follows` until the selection is exhausted.
 
     python 11_journal_log.py
 
@@ -32,6 +37,7 @@ from _shared import DEMO, DS_STATUS, spawn_demo
 
 LCB_NAME = "lcb01"
 BASE_MS = 1_715_000_000_000  # stable fixture timestamp
+LOG_REF = f"{DEMO.domain}/LLN0$GeneralLog"
 LOGGED_PATH = f"{DEMO.domain}/GGIO1$ST$Ind1$stVal"
 
 
@@ -39,7 +45,7 @@ def configure_log_control(server: iec61850.IedServer) -> None:
     server.register_log_control(
         f"{DEMO.ld}/LLN0.{LCB_NAME}",
         dataset=DS_STATUS,
-        log_ref=f"{DEMO.domain}/LLN0$GeneralLog",
+        log_ref=LOG_REF,
         trg_ops=["data_changed"],
         storage_capacity=10,
     )
@@ -70,9 +76,8 @@ async def main() -> None:
 
         conn = await iec61850.IedConnection.connect(server.bound_addr)
         try:
-            lcb_ref = DEMO.lcb(LCB_NAME)
-            entries, more = await conn.query_journal_by_time(
-                lcb_ref, BASE_MS, BASE_MS + 1_000
+            entries, more = await conn.query_journal(
+                LOG_REF, iec61850.JournalQuery.by_time(BASE_MS, BASE_MS + 1_000)
             )
             print(f"{len(entries)} entries  more={more}")
             for entry in entries[:3]:
@@ -83,8 +88,8 @@ async def main() -> None:
 
             # Overflow: push another 5 so the oldest fall off the ring.
             push_events(server, 5, t0=BASE_MS + 800)
-            entries, _ = await conn.query_journal_by_time(
-                lcb_ref, BASE_MS, BASE_MS + 1_000_000
+            entries = await conn.query_journal_all(
+                LOG_REF, iec61850.JournalQuery.by_time(BASE_MS, BASE_MS + 1_000_000)
             )
             print(
                 f"\nafter overflow: {len(entries)} entries  "
