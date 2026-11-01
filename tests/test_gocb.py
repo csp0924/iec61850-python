@@ -44,9 +44,13 @@ async def test_get_gocb_values_reads_the_registered_block(reference: str) -> Non
     assert values.conf_rev == 1
     assert values.nds_com is False
     assert values.fixed_offs is False
-    assert values.min_time_ms is not None
+    # The model's <GSE> sets the destination and the retransmission times.
+    assert values.min_time_ms == 10
     assert values.max_time_ms == 1000
-    assert 0 < values.min_time_ms <= values.max_time_ms
+    assert values.dst_address.addr == b"\x01\x0c\xcd\x01\x00\x01"
+    assert values.dst_address.app_id == 0x1000
+    assert values.dst_address.vlan_id == 0
+    assert values.dst_address.priority == 4
 
 
 async def test_set_gocb_values_enables_the_block_and_reads_back() -> None:
@@ -198,3 +202,27 @@ def test_gocb_values_from_native() -> None:
     assert values.min_time_ms == 4
     assert values.max_time_ms == 1000
     assert values.fixed_offs is None
+
+
+async def test_a_gocb_without_gse_addressing_is_registered_disabled() -> None:
+    """Without a <GSE> for it the block cannot publish: its destination reads
+    as six zero octets and enabling it is refused."""
+    cid = _demo.DEMO_CID.read_text(encoding="utf-8")
+    start = cid.index('<GSE ldInst="LD0" cbName="gcbStatus">')
+    end = cid.index("</GSE>", start) + len("</GSE>")
+    server = IedServer.from_scl_str(cid[:start] + cid[end:], ied_name=_demo.IED_NAME)
+    server.bind("127.0.0.1:0")
+    assert server.gse_address("LD0", "gcbStatus") is None
+    server.register_from_model()
+    async with server:
+        conn = await IedConnection.connect(server.bound_addr)
+        try:
+            values = await conn.get_gocb_values(GOCB_IEC)
+            assert values.go_ena is False
+            assert values.dst_address.addr == bytes(6)
+            with pytest.raises(iec61850.IedDataAccessError) as excinfo:
+                await conn.set_gocb_values(GOCB_IEC, go_ena=True)
+            assert excinfo.value.code == 2  # temporarily-unavailable
+            assert (await conn.get_gocb_values(GOCB_IEC)).go_ena is False
+        finally:
+            await conn.disconnect()

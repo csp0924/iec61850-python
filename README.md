@@ -1167,6 +1167,11 @@ request. A 0.4.0 server refuses `go_id` and `dat_set` with
 `TemporarilyUnavailable` while the block is enabled, and with
 `ObjectAccessDenied` when it presents Edition 2.1.
 
+A `dst_address.addr` of six zero octets means the block has no destination:
+a server registers a GOOSE control block whose SCL declares no `<GSE>` (or a
+`<GSE>` without a `MAC-Address`) disabled, and refuses to enable it with
+`TemporarilyUnavailable`.
+
 ## SCL / ICD / CID parser
 
 Load an IED configuration document and inspect it as plain Python data:
@@ -1332,6 +1337,29 @@ out as one batch, so a report control block without a buffer time sends one
 report for the whole array. An `on_read` handler on an array returns a list
 of the same length, and an `on_write` handler on an array receives the whole
 array when a client writes one element.
+
+### Communication addressing
+
+The SCL `<Communication>` section is read into the model and is available
+before and after `start()`:
+
+```python
+[ap] = server.connected_access_point("AP1")
+ap["sub_network"], ap["address"]["ip"], ap["address"]["parameters"]["MMS-Port"]
+
+gse = server.gse_address("LD0", "gcbStatus")   # None when there is no <GSE>
+gse["mac_address"], gse["app_id"], gse["vlan_id"], gse["vlan_priority"]
+gse["min_time_ms"], gse["max_time_ms"]
+
+server.smv_address("LD0", "MSVCB01")            # an <SMV> address, or None
+```
+
+Each address carries every `<P>` under `parameters` (type to text) and the
+typed `mac_address` (6 bytes), `app_id`, `vlan_id`, `vlan_priority` and `ip`,
+`None` when absent. `register_from_model()` publishes a GOOSE control block to
+its `<GSE>` address with its MinTime and MaxTime. The section is validated
+when the SCL is read: a malformed `<P>` value or a reference to an access
+point or control block that does not exist raises `SclError`.
 
 ### Registering what the model declares
 
@@ -2252,6 +2280,10 @@ Tracks iec61850-rust v0.4.0.
 - `IedServer.set_write_access_policy` also applies on a running server, to the
   writes that arrive afterwards.
 
+- `IedServer.connected_access_point(ap_name)`, `gse_address(ld_inst,
+  cb_name)` and `smv_address(ld_inst, cb_name)` read the SCL
+  `<Communication>` addressing from the model.
+
 #### Fixed
 
 - `connect` and `connect_tls` honour a `timeout_ms` above 10 s. The attempt
@@ -2309,6 +2341,12 @@ Tracks iec61850-rust v0.4.0.
 - GI and integrity reports read a data object or constructed attribute
   written concurrently whole or not at all.
 - A GoCB `DatSet` reads as `"<LD>/LLN0$<name>"`.
+- A GOOSE control block registered from the model takes `DstAddress`,
+  `MinTime` and `MaxTime` from its SCL `<GSE>`; one without a `<GSE>` (or
+  without a `MAC-Address`) is disabled, reads a destination of six zero
+  octets, and cannot be enabled.
+- The SCL `<Communication>` section is validated when it is read, and
+  `Scl.summary()` lists its connected access points and GSE / SMV addresses.
 - A client refused at Initiate raises `IedSessionRefusedError`; one refused
   for its calling identity or credentials raises `IedAuthenticationError`; a
   client refused by TLS gets the alert reason.

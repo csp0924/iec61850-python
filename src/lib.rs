@@ -53,6 +53,7 @@ use iec61850_model::types::{
 };
 use iec61850_model::value::MmsValue as RustMmsValue;
 use iec61850_model::FC as RustFC;
+use iec61850_model::{Address as RustAddress, ConnectedAccessPoint as RustConnectedAp};
 use iec61850_scl::raw::{
     DataTypeTemplates as RustDtt, GseControlType as RustGseControlType, OptionFieldsBits,
     RawAccessPoint, RawBda, RawCount, RawDaDef, RawDaType, RawDai, RawDataInstance, RawDataSet,
@@ -5037,6 +5038,45 @@ fn association_decision_from_py(value: &Bound<'_, PyAny>) -> RustAssociationDeci
     refuse
 }
 
+/// Builds the mapping an SCL `<Address>` reads as: every ``<P>`` under
+/// ``parameters`` (type → text, in document order) and the parameters this
+/// package reads typed — ``mac_address`` (6 ``bytes``), ``app_id``,
+/// ``vlan_id``, ``vlan_priority`` and ``ip`` (dotted text) — each ``None``
+/// when absent.
+fn address_to_pydict<'py>(py: Python<'py>, address: &RustAddress) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    let parameters = PyDict::new(py);
+    for p in address.parameters() {
+        parameters.set_item(p.p_type.as_str(), p.value.as_str())?;
+    }
+    d.set_item("parameters", parameters)?;
+    d.set_item(
+        "mac_address",
+        address.mac_address().map(|mac| PyBytes::new(py, &mac)),
+    )?;
+    d.set_item("app_id", address.app_id())?;
+    d.set_item("vlan_id", address.vlan_id())?;
+    d.set_item("vlan_priority", address.vlan_priority())?;
+    d.set_item("ip", address.ip().map(|ip| ip.to_string()))?;
+    Ok(d)
+}
+
+fn connected_ap_to_pydict<'py>(
+    py: Python<'py>,
+    ap: &RustConnectedAp,
+) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("sub_network", ap.sub_network.as_str())?;
+    d.set_item("sub_network_type", ap.sub_network_type.as_deref())?;
+    d.set_item("ap_name", ap.ap_name.as_str())?;
+    let address = match &ap.address {
+        Some(a) => Some(address_to_pydict(py, a)?),
+        None => None,
+    };
+    d.set_item("address", address)?;
+    Ok(d)
+}
+
 struct PySettingGroupHandler {
     on_act_sg: Option<Py<PyAny>>,
     on_edit_sg: Option<Py<PyAny>>,
@@ -6833,6 +6873,67 @@ impl PyIedServer {
             ServerState::Stopped => Err(PyRuntimeError::new_err(
                 "set_authenticator: server has been stopped",
             )),
+        }
+    }
+
+    /// The connections of the access point `ap_name` to its subnetworks, as
+    /// the SCL `<Communication>` section declares them: one mapping per
+    /// `<ConnectedAP>` with ``sub_network``, ``sub_network_type``,
+    /// ``ap_name`` and ``address`` (the mapping `gse_address` describes, or
+    /// ``None``). An access point the section does not name returns an empty
+    /// list. Available before and after `start()`.
+    fn connected_access_point<'py>(
+        &self,
+        py: Python<'py>,
+        ap_name: &str,
+    ) -> PyResult<Bound<'py, PyList>> {
+        let list = PyList::empty(py);
+        for ap in self.model.connected_ap(ap_name) {
+            list.append(connected_ap_to_pydict(py, ap)?)?;
+        }
+        Ok(list)
+    }
+
+    /// The SCL `<GSE>` addressing of the GOOSE control block `cb_name` in
+    /// the LLN0 of the logical device `ld_inst`, or ``None`` when the section
+    /// declares none. The mapping carries ``parameters`` (every ``<P>``,
+    /// type → text), ``mac_address`` (6 ``bytes``), ``app_id``, ``vlan_id``,
+    /// ``vlan_priority``, ``ip`` and ``min_time_ms`` / ``max_time_ms``; a
+    /// value the section leaves out is ``None``.
+    ///
+    /// `register_from_model` publishes a GOOSE control block to this
+    /// address with these retransmission times. A control block without one,
+    /// or whose address has no ``MAC-Address``, is registered disabled: its
+    /// ``DstAddress.Addr`` reads as six zero octets and enabling it is
+    /// refused with temporarily-unavailable.
+    fn gse_address<'py>(
+        &self,
+        py: Python<'py>,
+        ld_inst: &str,
+        cb_name: &str,
+    ) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let Some(gse) = self.model.gse_address(ld_inst, cb_name) else {
+            return Ok(None);
+        };
+        let d = address_to_pydict(py, &gse.address)?;
+        d.set_item("min_time_ms", gse.min_time_ms)?;
+        d.set_item("max_time_ms", gse.max_time_ms)?;
+        Ok(Some(d))
+    }
+
+    /// The SCL `<SMV>` address of the sampled values control block
+    /// `cb_name` in the LLN0 of the logical device `ld_inst`, as the mapping
+    /// `gse_address` describes without the retransmission times, or ``None``
+    /// when the section declares none.
+    fn smv_address<'py>(
+        &self,
+        py: Python<'py>,
+        ld_inst: &str,
+        cb_name: &str,
+    ) -> PyResult<Option<Bound<'py, PyDict>>> {
+        match self.model.smv_address(ld_inst, cb_name) {
+            Some(address) => Ok(Some(address_to_pydict(py, address)?)),
+            None => Ok(None),
         }
     }
 

@@ -999,3 +999,28 @@ async def test_register_from_model_with_a_missing_data_set_registers_nothing() -
     async with sound:
         summary = sound.register_from_model()
         assert summary is not None and summary["lcbs"] == 1
+
+
+# ── SCL Communication addressing ────────────────────────────────────────────
+
+
+def test_communication_addressing_reads_from_the_model() -> None:
+    server = _demo_server()
+    [ap] = server.connected_access_point("AP1")
+    assert ap["ap_name"] == "AP1"
+    assert ap["address"]["ip"] == "127.0.0.1"
+    assert ap["address"]["parameters"]["MMS-Port"] == "102"
+    assert ap["address"]["parameters"]["OSI-PSEL"] == "00000001"
+    assert server.connected_access_point("NoSuchAP") == []
+
+    gse = server.gse_address("LD0", "gcbStatus")
+    assert gse is not None
+    assert gse["mac_address"] == b"\x01\x0c\xcd\x01\x00\x01"
+    assert gse["app_id"] == 0x1000
+    assert gse["vlan_id"] == 0
+    assert gse["vlan_priority"] == 4
+    assert gse["min_time_ms"] == 10
+    assert gse["max_time_ms"] == 1000
+    assert gse["parameters"]["APPID"] == "1000"
+    assert server.gse_address("LD0", "noSuchGoCB") is None
+    assert server.smv_address("LD0", "noSuchSvCB") is None
