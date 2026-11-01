@@ -1,7 +1,8 @@
-"""iec61850 — Python client for IEC 61850 (MMS over TCP).
+"""iec61850 — IEC 61850 MMS client and server for Python (MMS over TCP).
 
-Async-first. Public surface re-exported from this module. See ``IedConnection``
-for the primary client entry point.
+Async-first. Public surface re-exported from this module. ``IedConnection``
+and ``Iec61850Client`` are the client entry points; ``IedServer`` hosts an
+MMS server built from SCL or from a model spec.
 """
 
 from __future__ import annotations

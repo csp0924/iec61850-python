@@ -8,7 +8,7 @@ name = "iec61850"
 # Keep in step with `version` in Cargo.toml: scripts/release.py reads the
 # Cargo one to locate the built wheel, and a mismatch makes it find nothing.
 version = "0.15.2"
-description = "Async-first IEC 61850 client for Python."
+description = "Async-first IEC 61850 MMS client and server for Python."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT OR Apache-2.0"

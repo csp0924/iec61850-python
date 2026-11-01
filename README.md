@@ -1,6 +1,6 @@
 # iec61850
 
-Async-first, type-hinted IEC 61850 client for Python.
+Async-first, type-hinted IEC 61850 MMS client and server for Python.
 
 ## Scope and protocol boundaries
 
