@@ -1328,15 +1328,33 @@ server.on_write("GenericIO/GGIO1.SetPt1.setVal",
 
 `on_control` binds the server-side execution of a control object. Address
 it at the DO (`"<LD>/<LN>.<DO>"`) and declare which IEC 61850 control
-model the DO uses. Up to three callbacks may be supplied:
+model the DO uses. Up to three callbacks may be supplied, and they differ in
+how they refuse a command:
 
-- `check` — sync. Static validation before the operate phase fires
-  (interlocks, mode, permissions). Raise to reject; the return value is
-  ignored.
-- `operate` — sync or `async`. The actual command execution. Raise on
-  failure; the return value is ignored.
-- `wait` — sync or `async`. Dynamic check during the operate phase for
-  `sbo-enhanced` controls (e.g. wait for synchro-check confirmation).
+| Callback  | Kind           | Runs                                                                   | Refuses the command when it                       |
+|-----------|----------------|------------------------------------------------------------------------|---------------------------------------------------|
+| `check`   | sync only      | on Select (`ctl_val` is `None`), SelectWithValue and Operate, first     | raises; its return value is ignored               |
+| `wait`    | sync or `async` | on Operate, after `check` and before the Operate response, under every control model | raises, or returns `False`                        |
+| `operate` | sync or `async` | on Operate, after a positive Operate response                         | raises, or returns `False`                        |
+
+- `check` is static validation: interlocks, mode, permissions. It is
+  called as a plain function, so an `async def` check is never awaited and
+  never refuses anything.
+- `wait` is the dynamic check, the WaitForExecution state of IEC 61850-7-2
+  (for example waiting for a synchro-check confirmation). Its outcome
+  decides the Operate response.
+- `operate` executes the command. An Operate on an object registered
+  without one is refused with `NotSupported`.
+
+A raised exception refuses with the add cause it carries (see below); a
+`False` return refuses with `Unknown`. `None`, `True` and any other return
+value accept.
+
+`operate` runs only after the client has received a positive Operate
+response. Under the enhanced-security models its failure reaches the client
+as a negative CommandTermination carrying the add cause. Under the
+normal-security models it is not reported to the client at all, so refuse
+a command from `check` or `wait` instead.
 
 Each callback receives `(path, ctl_val, action)`. `action` is a dict with
 `ctl_num`, `test`, `synchro_check`, `interlock_check`, `is_select`, `t`
@@ -1344,10 +1362,8 @@ Each callback receives `(path, ctl_val, action)`. `action` is a dict with
 association that issued it), and `origin` (a sub-dict with `or_cat` and
 `or_ident`).
 
-Under the normal-security models a failing `operate` is not reported to
-the client, so refuse a command from `check` (or `wait`) instead. The
-server refuses a time-activated operate (an `Oper` with an `operTm`) with
-`NotSupported`.
+The server refuses a time-activated operate (an `Oper` with an `operTm`)
+with `NotSupported`.
 
 ```python
 async def operate(path: str, value: bool, action: dict) -> None:
