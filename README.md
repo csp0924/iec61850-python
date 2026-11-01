@@ -1442,8 +1442,8 @@ server.set_authenticator(authenticate)
 ```
 
 The server calls the callable while the association is set up, on a thread
-of its bounded blocking pool, not on a runtime worker (as it calls every
-Python callback, see [Read / write callbacks](#read--write-callbacks)). A
+of its bounded blocking pool, not on a runtime worker (as it calls the other
+Python callbacks, see [Read / write callbacks](#read--write-callbacks)). A
 wait that releases the GIL (`threading.Event.wait`, socket I/O,
 `time.sleep`) does not hold up other associations, though while the pool is
 full further callbacks queue; computation that holds the GIL stalls every
@@ -1549,12 +1549,14 @@ a data object or constructed attribute returns its value as a list in model
 order. The server holds no lock while a handler runs, so it may call the
 `update_*` methods.
 
-Every Python callback of a hosted server (read, write, control, setting
-group and authenticator) runs on a thread of the server's bounded blocking
-pool, not on a runtime worker, and takes the GIL there. A blocking wait in
-one does not hold up other associations, though while the pool is full
-further callbacks queue; computation that holds the GIL stalls every Python
-callback. Successive calls may run on different threads, so
+The Python callbacks of a hosted server (read, write, control `check`, a
+synchronous control `operate` or `wait`, setting group and authenticator)
+run on a thread of the server's bounded blocking pool, not on a runtime
+worker, and take the GIL there; an `async def` `operate` or `wait` is called
+there too and its coroutine then runs on the event loop that started the
+server. A blocking wait in one does not hold up other associations, though
+while the pool is full further callbacks queue; computation that holds the
+GIL stalls every Python callback. Successive calls may run on different threads, so
 `threading.local` state does not carry over, and callbacks of different
 associations may interleave.
 
@@ -2406,10 +2408,13 @@ Tracks iec61850-rust v0.4.0.
 - GI and integrity reports read a data object or constructed attribute
   written concurrently whole or not at all.
 - A GoCB `DatSet` reads as `"<LD>/LLN0$<name>"`.
-- Python callbacks of a hosted server run on a thread of the server's
-  blocking pool instead of a runtime worker: a blocking wait no longer holds
-  up other associations, successive calls may run on different threads, and
-  callbacks of different associations may interleave.
+- Python callbacks of a hosted server, a synchronous control `operate` or
+  `wait` included, run on a thread of the server's blocking pool instead of
+  a runtime worker: a blocking wait no longer holds up other associations,
+  `oper_timeout_ms` ends a synchronous `operate` that runs past it (the
+  callback finishes on its thread, its result ignored), successive calls may
+  run on different threads, and callbacks of different associations may
+  interleave.
 - Report and log triggers are delivered in the order the values were
   stored; a value overwritten within one client write request is not
   delivered on its own.

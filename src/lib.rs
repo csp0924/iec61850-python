@@ -5312,9 +5312,46 @@ impl RustCheckHandler for PyCheckHandler {
     }
 }
 
+/// Runs an ``operate`` or ``wait`` callable for one control request.
+///
+/// The callable is called on a thread of the runtime's blocking pool, where
+/// it takes the GIL, so a synchronous callable that blocks occupies no
+/// runtime worker and the returned future stays cancellable: when the
+/// control object's time limit drops the future, the command ends at once,
+/// and a callable already running finishes on its thread with its result
+/// discarded. A coroutine the callable returns is awaited on the captured
+/// Python event loop.
+async fn run_control_callable(
+    callback: Arc<Py<PyAny>>,
+    task_locals: TaskLocals,
+    path: String,
+    action: RustControlAction,
+    ctl_val: RustMmsValue,
+) -> Result<(), RustServerControlAddCause> {
+    let step = tokio::task::spawn_blocking(move || {
+        invoke_control_callable(&callback, &task_locals, |py| {
+            let action_dict = control_action_to_pydict(py, &action)?;
+            let ctl_val_py = mms_value_to_pyobject(py, &ctl_val)?;
+            pyo3::types::PyTuple::new(
+                py,
+                [
+                    path.into_pyobject(py)?.into_any(),
+                    ctl_val_py.into_bound(py),
+                    action_dict.into_any(),
+                ],
+            )
+        })
+    })
+    .await;
+    match step {
+        Ok(step) => finish_handler_step(step).await,
+        Err(_) => Err(RustServerControlAddCause::Unknown),
+    }
+}
+
 struct PyControlOperateHandler {
     user_path: String,
-    callback: Py<PyAny>,
+    callback: Arc<Py<PyAny>>,
     task_locals: TaskLocals,
 }
 
@@ -5325,30 +5362,19 @@ impl RustControlHandler for PyControlOperateHandler {
         ctl_val: &'a RustMmsValue,
         _test: bool,
     ) -> RustOperateFuture<'a> {
-        let path = &self.user_path;
-        let callback = &self.callback;
-        let locals = &self.task_locals;
-        Box::pin(async move {
-            let step = invoke_control_callable(callback, locals, |py| {
-                let action_dict = control_action_to_pydict(py, action)?;
-                let ctl_val_py = mms_value_to_pyobject(py, ctl_val)?;
-                pyo3::types::PyTuple::new(
-                    py,
-                    [
-                        path.into_pyobject(py)?.into_any(),
-                        ctl_val_py.into_bound(py),
-                        action_dict.into_any(),
-                    ],
-                )
-            });
-            finish_handler_step(step).await
-        })
+        Box::pin(run_control_callable(
+            Arc::clone(&self.callback),
+            self.task_locals.clone(),
+            self.user_path.clone(),
+            action.clone(),
+            ctl_val.clone(),
+        ))
     }
 }
 
 struct PyControlWaitHandler {
     user_path: String,
-    callback: Py<PyAny>,
+    callback: Arc<Py<PyAny>>,
     task_locals: TaskLocals,
 }
 
@@ -5360,24 +5386,13 @@ impl RustWaitHandler for PyControlWaitHandler {
         _test: bool,
         _synchro_check: bool,
     ) -> RustWaitForExecFuture<'a> {
-        let path = &self.user_path;
-        let callback = &self.callback;
-        let locals = &self.task_locals;
-        Box::pin(async move {
-            let step = invoke_control_callable(callback, locals, |py| {
-                let action_dict = control_action_to_pydict(py, action)?;
-                let ctl_val_py = mms_value_to_pyobject(py, ctl_val)?;
-                pyo3::types::PyTuple::new(
-                    py,
-                    [
-                        path.into_pyobject(py)?.into_any(),
-                        ctl_val_py.into_bound(py),
-                        action_dict.into_any(),
-                    ],
-                )
-            });
-            finish_handler_step(step).await
-        })
+        Box::pin(run_control_callable(
+            Arc::clone(&self.callback),
+            self.task_locals.clone(),
+            self.user_path.clone(),
+            action.clone(),
+            ctl_val.clone(),
+        ))
     }
 }
 
@@ -5418,14 +5433,14 @@ fn build_control_entry(pc: PendingControl, task_locals: TaskLocals) -> RustContr
     if let Some(cb) = pc.operate {
         entry = entry.with_operate(Arc::new(PyControlOperateHandler {
             user_path: pc.user_path.clone(),
-            callback: cb,
+            callback: Arc::new(cb),
             task_locals: task_locals.clone(),
         }) as Arc<dyn RustControlHandler>);
     }
     if let Some(cb) = pc.wait {
         entry = entry.with_wait(Arc::new(PyControlWaitHandler {
             user_path: pc.user_path,
-            callback: cb,
+            callback: Arc::new(cb),
             task_locals,
         }) as Arc<dyn RustWaitHandler>);
     }
@@ -7251,15 +7266,20 @@ impl PyIedServer {
     /// `ctl_model`, `sbo_timeout_ms`, `sbo_class` and `oper_timeout_ms` (the
     /// time limit of an executing command, 0 for none) apply where the model
     /// declares no `ctlModel`, `sboTimeout`, `sboClass` or `operTimeout`
-    /// attribute; a declared attribute takes precedence.
+    /// attribute; a declared attribute takes precedence. When the time limit
+    /// expires the command ends with ``TimeLimitOver``; an ``operate`` still
+    /// running is not interrupted, and its result is ignored.
     ///
-    /// The server calls each callback on a thread of its bounded blocking
-    /// pool, not on a runtime worker, and takes the GIL there: a blocking
-    /// wait does not hold up other associations, though while the pool is
-    /// full further callbacks queue; computation that holds the GIL stalls
-    /// every Python callback. Successive calls may run on different threads,
-    /// so ``threading.local`` state does not carry over, and callbacks of
-    /// different associations may interleave.
+    /// The server calls ``check``, and a synchronous ``operate`` or ``wait``,
+    /// on a thread of its bounded blocking pool, not on a runtime worker,
+    /// and takes the GIL there; an ``async`` ``operate`` or ``wait`` is
+    /// called there too and its coroutine then runs on the event loop that
+    /// started the server. A blocking wait does not hold up other
+    /// associations, though while the pool is full further callbacks queue;
+    /// computation that holds the GIL stalls every Python callback.
+    /// Successive calls may run on different threads, so ``threading.local``
+    /// state does not carry over, and callbacks of different associations
+    /// may interleave.
     #[pyo3(signature = (
         path, *, ctl_model, check=None, operate=None, wait=None,
         sbo_timeout_ms=30_000, sbo_class="operate-once", oper_timeout_ms=0,
