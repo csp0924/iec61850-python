@@ -1895,6 +1895,33 @@ Tracks iec61850-rust v0.4.0.
   assert (await ctl.select()).success
   ```
 
+- A `ControlOutcome` is truthy exactly when the command succeeded. In 0.15
+  it had no truth value of its own, so `if await ctl.operate(v):` and
+  `if await ctl.cancel(v):` were always true; they now take the failure
+  branch when the server refuses. Handle the refusal there, or drop the
+  test where the code has to run either way.
+
+  ```python
+  # 0.15: always entered
+  if await ctl.operate(True): ...
+  # 0.16: entered only on success
+  outcome = await ctl.operate(True)
+  if outcome: ...
+  else: print(outcome.add_cause)
+  ```
+
+- Add cause 24 reads as `"blocked-by-command"` instead of
+  `"abortion-by-command"`. `ControlAddCause.ABORTION_BY_COMMAND` stays an
+  alias of `BLOCKED_BY_COMMAND` and the old token still parses, but code
+  that compares the string no longer matches. Compare the enum member.
+
+  ```python
+  # 0.15
+  if outcome.add_cause == "abortion-by-command": ...
+  # 0.16
+  if outcome.add_cause is iec61850.ControlAddCause.BLOCKED_BY_COMMAND: ...
+  ```
+
 - The `action` dict passed to `on_control` callbacks carries `t` (the
   request timestamp as eight UTC_TIME octets) and `conn_id` instead of
   `ctl_time_ms`.
