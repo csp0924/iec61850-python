@@ -676,6 +676,27 @@ async def test_on_confirm_raising_refuses_the_edit() -> None:
     assert value == 20
 
 
+# ── device model per connection ─────────────────────────────────────────────
+
+
+async def test_each_connection_reads_the_model_of_its_own_server(
+    demo_server: str, writable_server: str
+) -> None:
+    def ld_names(model: dict) -> list[str]:
+        return [ld["name"] for ld in model["logical_devices"]]
+
+    first = await IedConnection.connect(demo_server)
+    try:
+        assert ld_names(await first.get_device_model()) == [_demo.DOMAIN]
+    finally:
+        await first.disconnect()
+    second = await IedConnection.connect(writable_server)
+    try:
+        assert ld_names(await second.get_device_model()) == [_demo.WRITABLE_DOMAIN]
+    finally:
+        await second.disconnect()
+
+
 # ── write access policy ─────────────────────────────────────────────────────
 
 CFG_REF = f"{_demo.WRITABLE_DOMAIN}/GGIO1.Cfg.setVal"
