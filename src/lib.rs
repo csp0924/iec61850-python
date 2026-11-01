@@ -797,12 +797,42 @@ fn build_tls_acceptor(pt: &PendingTls) -> PyResult<iec61850_tls::TlsAcceptor> {
     Ok(iec61850_tls::TlsAcceptor::new(cfg))
 }
 
+/// Request timeout the MMS client applies when none is configured.
+const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 5_000;
+
+/// Slack the connect backstop leaves past the deadlines the client enforces.
+const CONNECT_BACKSTOP_SLACK_MS: u64 = 1_000;
+
+/// Upper bound on a whole connect.
+///
+/// The MMS client enforces `timeout_ms` on the TCP connection, the TLS
+/// handshake and the COTP handshake, and `request_timeout_ms` on the Session,
+/// ACSE and Initiate exchange; the backstop is their sum plus slack, so it
+/// fires only if the client fails to end the attempt itself.
+fn connect_backstop(timeout_ms: u64, request_timeout_ms: Option<u64>) -> Duration {
+    Duration::from_millis(
+        timeout_ms
+            .saturating_add(request_timeout_ms.unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS))
+            .saturating_add(CONNECT_BACKSTOP_SLACK_MS),
+    )
+}
+
+/// The `IedTimeoutError` raised when the connect backstop fires, carrying the
+/// connect deadline the caller gave as `timeout_ms`.
+fn connect_backstop_error(target: &str, timeout_ms: u64) -> PyErr {
+    with_attrs(
+        IedTimeoutError::new_err(format!("{target} timed out after {timeout_ms} ms")),
+        [("timeout_ms", int_attr(timeout_ms as i64))],
+    )
+}
+
 /// Build an `IedConnection` whose underlying MMS client carries the requested
-/// per-request tuning (request timeout, max outstanding invocations, locally
-/// declared max PDU size), the ISO addressing the association offers, and the
-/// most names one directory walk collects. `None` leaves the corresponding
-/// default in place.
+/// connect deadline and per-request tuning (request timeout, max outstanding
+/// invocations, locally declared max PDU size), the ISO addressing the
+/// association offers, and the most names one directory walk collects.
+/// `None` leaves the corresponding default in place.
 fn build_ied_connection(
+    connect_timeout_ms: Option<u64>,
     request_timeout_ms: Option<u64>,
     max_outstanding: Option<u16>,
     local_max_pdu_size: Option<u32>,
@@ -810,6 +840,9 @@ fn build_ied_connection(
     max_name_list_names: Option<usize>,
 ) -> RustIedConnection {
     let mut builder = iec61850_mms::MmsClientBuilder::new();
+    if let Some(t) = connect_timeout_ms {
+        builder = builder.connect_timeout_ms(t);
+    }
     if let Some(t) = request_timeout_ms {
         builder = builder.request_timeout_ms(t);
     }
@@ -844,9 +877,14 @@ struct PyIedConnection {
 impl PyIedConnection {
     /// Construct + connect in one step. `addr` is `"host:port"`.
     ///
-    /// `timeout_ms` wraps the entire connect handshake. The optional
-    /// `request_timeout_ms` / `max_outstanding` / `local_max_pdu_size` tune
-    /// the underlying MMS client for after the connection is established.
+    /// `timeout_ms` bounds the TCP connection and the COTP handshake
+    /// together; running out of it raises `IedTimeoutError` whose
+    /// `timeout_ms` is the value given. The Session, ACSE and MMS Initiate
+    /// exchange that follows is bounded by `request_timeout_ms` (5000 ms when
+    /// `None`), whose expiry raises `IedTimeoutError` carrying that value.
+    /// The optional `request_timeout_ms` / `max_outstanding` /
+    /// `local_max_pdu_size` also tune the underlying MMS client for after
+    /// the connection is established.
     /// `max_name_list_names` caps the names one directory walk collects; a
     /// walk past it raises `IedServiceError` with `reason ==
     /// "name-list-limit"`.
@@ -877,19 +915,18 @@ impl PyIedConnection {
         let iso = iso.map(|d| iso_params_from_dict(&d)).transpose()?;
         future_into_py(py, async move {
             let conn = build_ied_connection(
+                Some(timeout_ms),
                 request_timeout_ms,
                 max_outstanding,
                 local_max_pdu_size,
                 iso,
                 max_name_list_names,
             );
-            let deadline = std::time::Duration::from_millis(timeout_ms);
-            tokio::time::timeout(deadline, conn.connect(&host, port))
+            let backstop = connect_backstop(timeout_ms, request_timeout_ms);
+            tokio::time::timeout(backstop, conn.connect(&host, port))
                 .await
                 .map_err(|_| {
-                    IedTimeoutError::new_err(format!(
-                        "connect to {host}:{port} timed out after {timeout_ms} ms"
-                    ))
+                    connect_backstop_error(&format!("connect to {host}:{port}"), timeout_ms)
                 })?
                 .map_err(|e| map_client_error(e, ErrCtx::Connect))?;
             Ok(PyIedConnection {
@@ -907,6 +944,13 @@ impl PyIedConnection {
     /// ``min_tls_version`` / ``max_tls_version`` accept ``"tls1.2"`` or
     /// ``"tls1.3"``. ``max_name_list_names`` caps the names one directory
     /// walk collects, as for ``connect``.
+    ///
+    /// ``timeout_ms`` bounds the TCP connection, the TLS handshake and the
+    /// COTP handshake together. Running out of it during the TLS handshake
+    /// raises ``IedTlsError`` with ``kind == "timeout"``, and during either
+    /// other step ``IedTimeoutError`` whose ``timeout_ms`` is the value
+    /// given. The Session, ACSE and MMS Initiate exchange is bounded by
+    /// ``request_timeout_ms``, as for ``connect``.
     #[classmethod]
     #[pyo3(signature = (
         addr,
@@ -972,7 +1016,6 @@ impl PyIedConnection {
             max_version,
         )?;
         future_into_py(py, async move {
-            let deadline = Duration::from_millis(timeout_ms);
             let mut addrs = tokio::net::lookup_host((host.as_str(), port))
                 .await
                 .map_err(|e| IedConnectionError::new_err(format!("resolve {host}:{port}: {e}")))?;
@@ -980,18 +1023,18 @@ impl PyIedConnection {
                 IedConnectionError::new_err(format!("no address for {host}:{port}"))
             })?;
             let conn = build_ied_connection(
+                Some(timeout_ms),
                 request_timeout_ms,
                 max_outstanding,
                 local_max_pdu_size,
                 iso,
                 max_name_list_names,
             );
-            tokio::time::timeout(deadline, conn.connect_tls(socket_addr, &connector, sni))
+            let backstop = connect_backstop(timeout_ms, request_timeout_ms);
+            tokio::time::timeout(backstop, conn.connect_tls(socket_addr, &connector, sni))
                 .await
                 .map_err(|_| {
-                    IedTimeoutError::new_err(format!(
-                        "TLS connect to {host}:{port} timed out after {timeout_ms} ms"
-                    ))
+                    connect_backstop_error(&format!("TLS connect to {host}:{port}"), timeout_ms)
                 })?
                 .map_err(|e| map_client_error(e, ErrCtx::Connect))?;
             Ok(PyIedConnection {

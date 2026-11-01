@@ -7,11 +7,40 @@ against the demonstration IED this package hosts.
 
 from __future__ import annotations
 
+import asyncio
 import socket
+import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 import pytest
 
 import iec61850
+
+
+@asynccontextmanager
+async def silent_listener() -> AsyncIterator[str]:
+    """Yield the address of a loopback listener that never answers.
+
+    Every connection is accepted and read until the client drops it, so the
+    TCP connection succeeds while the COTP CR stays unanswered.
+    """
+
+    async def hold(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            await reader.read()
+        except ConnectionError:
+            pass
+        finally:
+            writer.close()
+
+    server = await asyncio.start_server(hold, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        yield f"127.0.0.1:{port}"
+    finally:
+        server.close()
+        await server.wait_closed()
 
 
 def test_address_missing_port() -> None:
@@ -68,3 +97,27 @@ async def test_abort_drops_connection(demo_server: str) -> None:
     assert conn.is_connected
     await conn.abort()
     assert conn.is_connected is False
+
+
+async def test_unanswered_cotp_request_times_out_at_the_given_deadline() -> None:
+    """An unanswered COTP CR raises IedTimeoutError carrying ``timeout_ms``."""
+    async with silent_listener() as addr:
+        with pytest.raises(iec61850.IedTimeoutError) as info:
+            await iec61850.IedConnection.connect(addr, timeout_ms=300)
+    assert not isinstance(info.value, iec61850.IedConnectionError)
+    assert info.value.timeout_ms == 300
+
+
+async def test_connect_deadline_above_ten_seconds_is_honoured() -> None:
+    """A ``timeout_ms`` past the client default is the deadline applied.
+
+    The elapsed time is a lower bound only: the connect must not give up
+    before the deadline the caller asked for.
+    """
+    async with silent_listener() as addr:
+        started = time.perf_counter()
+        with pytest.raises(iec61850.IedTimeoutError) as info:
+            await iec61850.IedConnection.connect(addr, timeout_ms=10_500)
+        elapsed = time.perf_counter() - started
+    assert info.value.timeout_ms == 10_500
+    assert elapsed >= 10.5

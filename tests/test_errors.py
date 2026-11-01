@@ -7,6 +7,7 @@ rather than its message text.
 
 from __future__ import annotations
 
+import asyncio
 import datetime as _dt
 import threading
 from dataclasses import dataclass
@@ -117,6 +118,37 @@ async def test_client_certificate_refused_under_tls13_raises_tls_error(
         with pytest.raises(iec61850.IedTlsError) as info:
             await iec61850.IedConnection.connect_tls(server.bound_addr, tls, SERVER_CN)
     assert info.value.kind == "alert_received"
+
+
+async def test_stalled_tls_handshake_times_out_as_a_tls_error(
+    server_id: Identity,
+) -> None:
+    """A peer that never answers the ClientHello ends the connect deadline.
+
+    Running out of the deadline during the handshake is a failed handshake of
+    the ``timeout`` kind, not an IedTimeoutError.
+    """
+
+    async def hold(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            await reader.read()
+        except ConnectionError:
+            pass
+        finally:
+            writer.close()
+
+    listener = await asyncio.start_server(hold, "127.0.0.1", 0)
+    port = listener.sockets[0].getsockname()[1]
+    try:
+        tls = iec61850.TlsConfig(ca_pem=server_id.cert)
+        with pytest.raises(iec61850.IedTlsError) as info:
+            await iec61850.IedConnection.connect_tls(
+                f"127.0.0.1:{port}", tls, SERVER_CN, timeout_ms=300
+            )
+    finally:
+        listener.close()
+        await listener.wait_closed()
+    assert info.value.kind == "timeout"
 
 
 async def test_trusted_tls_session_connects(
