@@ -3257,6 +3257,7 @@ fn map_scl_error(py: Python<'_>, err: RustSclParseError) -> PyErr {
         iec61850_scl::ErrorKind::AttributeValueInvalid { .. } => "AttributeValueInvalid",
         iec61850_scl::ErrorKind::EnumValueUnknown { .. } => "EnumValueUnknown",
         iec61850_scl::ErrorKind::UnresolvedTypeReference { .. } => "UnresolvedTypeReference",
+        iec61850_scl::ErrorKind::UnresolvedDataSetReference { .. } => "UnresolvedDataSetReference",
         iec61850_scl::ErrorKind::DuplicateIdentifier { .. } => "DuplicateIdentifier",
         iec61850_scl::ErrorKind::SemanticConflict { .. } => "SemanticConflict",
         iec61850_scl::ErrorKind::Unsupported { .. } => "Unsupported",

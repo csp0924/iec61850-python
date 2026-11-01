@@ -21,6 +21,7 @@ from iec61850 import (
     IedServer,
     IedServerError,
     RcbWriteMask,
+    SclError,
 )
 
 URCB_MEAS = f"{_demo.DOMAIN}/LLN0$RP$urcbMeas"
@@ -876,45 +877,98 @@ def test_abort_and_dynamic_count_require_a_running_server() -> None:
 
 
 @pytest.mark.parametrize(
-    ("block", "edit"),
+    "edit",
     [
-        (
-            "GOOSE",
+        pytest.param(
             lambda cid: cid.replace(
                 'datSet="dsStatus"\n                        confRev="1" type="GOOSE"',
                 'datSet="dsMissing"\n                        confRev="1" type="GOOSE"',
             ),
+            id="GOOSE",
         ),
-        (
-            "log",
+        pytest.param(
             lambda cid: cid.replace(
                 "          </LN0>",
                 '            <LogControl name="lcbMissing" datSet="dsMissing"'
                 ' logName="GeneralLog"/>\n          </LN0>',
                 1,
             ),
+            id="log",
         ),
     ],
 )
-async def test_register_from_model_with_a_missing_data_set_registers_nothing(
-    block: str, edit
-) -> None:
-    """A GOOSE or log control block naming a data set the server does not
-    hold fails the whole call before anything is registered."""
+def test_scl_naming_a_missing_data_set_is_refused(edit) -> None:
+    """A GOOSE or log control block whose datSet names no data set of its
+    logical node is refused when the SCL is read."""
     cid = _demo.DEMO_CID.read_text(encoding="utf-8")
     text = edit(cid)
     assert text != cid
-    server = IedServer.from_scl_str(text, ied_name=_demo.IED_NAME)
-    server.bind("127.0.0.1:0")
-    async with server:
-        with pytest.raises(IedServerError, match=f"{block} control block"):
-            server.register_from_model()
-        conn = await IedConnection.connect(server.bound_addr)
+    with pytest.raises(SclError) as info:
+        IedServer.from_scl_str(text, ied_name=_demo.IED_NAME)
+    assert info.value.kind == "UnresolvedDataSetReference"
+
+
+def _spec_with_lcb(dataset_ref: str) -> dict:
+    """A model whose LLN0 declares one data set and an LCB on `dataset_ref`."""
+    return {
+        "ied_name": "LgIED",
+        "lds": [
+            {
+                "inst": "LD0",
+                "lns": [
+                    {
+                        "lln0": True,
+                        "dos": [
+                            {
+                                "name": "Mod",
+                                "das": [
+                                    {"name": "stVal", "fc": "ST", "type": "Int32"},
+                                ],
+                            },
+                        ],
+                        "datasets": [
+                            {
+                                "name": "ds1",
+                                "entries": [
+                                    {"ln_name": "LLN0", "fc": "ST", "do_path": ["Mod"]},
+                                ],
+                            },
+                        ],
+                        "rcbs": [{"name": "rpt", "dataset_ref": "LLN0$ds1"}],
+                        "lcbs": [
+                            {
+                                "name": "lcb1",
+                                "dataset_ref": dataset_ref,
+                                "log_ref": "LgIEDLD0/LLN0$GeneralLog",
+                            },
+                        ],
+                    },
+                ],
+            },
+        ],
+    }
+
+
+async def test_register_from_model_with_a_missing_data_set_registers_nothing() -> None:
+    """A model built in code whose LCB names a data set the server does not
+    hold fails the whole call before anything is registered; the same model
+    naming an existing data set registers."""
+    broken = IedServer.from_model_spec(_spec_with_lcb("LLN0$dsMissing"))
+    broken.bind("127.0.0.1:0")
+    async with broken:
+        with pytest.raises(IedServerError, match="log control block"):
+            broken.register_from_model()
+        conn = await IedConnection.connect(broken.bound_addr)
         try:
-            for cls in (AcsiClass.REPORT, AcsiClass.BUFFERED_REPORT):
-                assert (
-                    await conn.get_logical_node_directory(f"{_demo.DOMAIN}/LLN0", cls)
-                    == []
-                )
+            assert (
+                await conn.get_logical_node_directory("LgIEDLD0/LLN0", AcsiClass.REPORT)
+                == []
+            )
         finally:
             await conn.disconnect()
+
+    sound = IedServer.from_model_spec(_spec_with_lcb("LLN0$ds1"))
+    sound.bind("127.0.0.1:0")
+    async with sound:
+        summary = sound.register_from_model()
+        assert summary is not None and summary["lcbs"] == 1
