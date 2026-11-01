@@ -1819,7 +1819,9 @@ does not apply reads `None`.
 `IedSessionRefusedError` and `IedTlsError` derive from
 `IedConnectionError`. `IedTimeoutError` derives from `IedError` only: a
 request, connect or command-termination timeout is not caught by
-`except IedServiceError`.
+`except IedServiceError`. A connection that drops after it was established
+raises `IedConnectionError` (`reason` `"connection-lost"`,
+`"released-by-peer"` or `"transport"`), not `IedServiceError`.
 
 ## Release notes
 
@@ -1863,14 +1865,31 @@ Tracks iec61850-rust v0.4.0.
   t_octets, conn = action["t"], action["conn_id"]
   ```
 
-- `IedTimeoutError` no longer derives from `IedServiceError`; catch it on
-  its own.
+- Client failures raise the exception class of their cause. The class
+  hierarchy is unchanged (`IedTimeoutError` derives from `IedError` only, as
+  before); what moves is which class a failure raises:
+
+  | Failure                                              | 0.15                 | 0.16                                                    |
+  |------------------------------------------------------|----------------------|---------------------------------------------------------|
+  | A request times out                                  | `IedServiceError`    | `IedTimeoutError`                                       |
+  | A connect times out in the TCP or COTP stage         | `IedConnectionError` | `IedTimeoutError`                                       |
+  | An established connection is lost, released by the peer, or fails in transport | `IedServiceError` | `IedConnectionError` with `reason` `"connection-lost"`, `"released-by-peer"` or `"transport"` |
+
+  `except IedServiceError` no longer catches a request timeout or a lost
+  connection, and `except IedConnectionError` around `connect` no longer
+  catches a connect timeout. Catch the classes together, or branch on
+  `reason`:
 
   ```python
   # 0.15
-  except iec61850.IedServiceError: ...      # also caught timeouts
+  except iec61850.IedServiceError: ...   # also caught timeouts and disconnects
   # 0.16
-  except (iec61850.IedServiceError, iec61850.IedTimeoutError): ...
+  except (iec61850.IedServiceError, iec61850.IedTimeoutError,
+          iec61850.IedConnectionError): ...
+  # or
+  except iec61850.IedConnectionError as e:
+      if e.reason in ("connection-lost", "released-by-peer", "transport"):
+          ...   # reconnect
   ```
 
 - The data sets, report, GOOSE and log control blocks and control objects a
@@ -1984,7 +2003,8 @@ Tracks iec61850-rust v0.4.0.
   `ControlAddCause.BLOCKED_BY_COMMAND` (`"blocked-by-command"`), with
   `ABORTION_BY_COMMAND` kept as an alias and its token still parsed.
 - `IedTlsError`, a subclass of `IedConnectionError`, for a failed TLS
-  handshake, with `kind` and `message`. `IedConnectionError`,
+  handshake, with `kind` and `message`; 0.15 raised a plain
+  `IedConnectionError`, so `except IedConnectionError` still catches it. `IedConnectionError`,
   `IedServiceError`, `IedTimeoutError`, `IedDataAccessError` and
   `IedServerError` carry attributes naming the cause (see
   [Error handling](#error-handling)).
