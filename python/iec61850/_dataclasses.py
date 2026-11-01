@@ -380,6 +380,107 @@ class ServerStatus:
         )
 
 
+_JOURNAL_ENTRY_ID_LEN = 8
+
+
+def _check_entry_id(name: str, value: bytes) -> None:
+    """Reject a journal EntryID that is not 8 bytes."""
+    if not isinstance(value, (bytes, bytearray)) or len(value) != _JOURNAL_ENTRY_ID_LEN:
+        raise ValueError(f"{name} must be exactly {_JOURNAL_ENTRY_ID_LEN} bytes")
+
+
+def _check_non_negative(name: str, value: int | None) -> None:
+    """Reject a count or time that is not a non-negative int."""
+    if value is None:
+        return
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ValueError(f"{name} must be a non-negative int or None")
+
+
+@dataclass(frozen=True, slots=True)
+class JournalQuery:
+    """Selection of a journal read: the OPTIONAL selections of an MMS
+    ReadJournal request.
+
+    Every selection that is set narrows the result; with none set the query
+    reads the whole journal.
+
+    - ``start_time_ms`` begins at the entries whose time is at or after it;
+      ``start_entry`` (an 8-byte EntryID) begins at that entry instead. The
+      two are mutually exclusive.
+    - ``end_time_ms`` ends at the entries whose time is at or before it;
+      ``max_entries`` limits the count instead. The two are mutually
+      exclusive.
+    - ``variables`` returns only the data points whose data reference is
+      listed; empty returns every data point.
+    - ``after_entry`` is a ``(time_ms, entry_id)`` pair: the query resumes
+      after that entry, at entries whose time is at or after ``time_ms``.
+
+    :meth:`by_time` is the ACSI QueryLogByTime and :meth:`starting_after` the
+    ACSI QueryLogAfter, the two forms IEC 61850-8-1 defines; a server may
+    refuse other combinations. Times are milliseconds since the epoch.
+    """
+
+    start_time_ms: int | None = None
+    start_entry: bytes | None = None
+    end_time_ms: int | None = None
+    max_entries: int | None = None
+    variables: tuple[str, ...] = ()
+    after_entry: tuple[int, bytes] | None = None
+
+    def __post_init__(self) -> None:
+        """Validate every field, raising ``ValueError`` on the first offender."""
+        if self.start_time_ms is not None and self.start_entry is not None:
+            raise ValueError("start_time_ms and start_entry are mutually exclusive")
+        if self.end_time_ms is not None and self.max_entries is not None:
+            raise ValueError("end_time_ms and max_entries are mutually exclusive")
+        _check_non_negative("start_time_ms", self.start_time_ms)
+        _check_non_negative("end_time_ms", self.end_time_ms)
+        _check_non_negative("max_entries", self.max_entries)
+        if self.max_entries is not None and self.max_entries > 0xFFFFFFFF:
+            raise ValueError("max_entries does not fit in 32 bits")
+        if self.start_entry is not None:
+            _check_entry_id("start_entry", self.start_entry)
+        if isinstance(self.variables, str) or not all(
+            isinstance(v, str) for v in self.variables
+        ):
+            raise ValueError("variables must be a sequence of data reference strings")
+        if self.after_entry is not None:
+            if not isinstance(self.after_entry, tuple) or len(self.after_entry) != 2:
+                raise ValueError("after_entry must be a (time_ms, entry_id) pair")
+            _check_non_negative("after_entry time_ms", self.after_entry[0])
+            _check_entry_id("after_entry entry_id", self.after_entry[1])
+
+    @classmethod
+    def by_time(cls, start_ms: int, end_ms: int) -> "JournalQuery":
+        """ACSI QueryLogByTime: the entries whose time lies between
+        ``start_ms`` and ``end_ms``, both included."""
+        return cls(start_time_ms=start_ms, end_time_ms=end_ms)
+
+    @classmethod
+    def starting_after(cls, time_ms: int, entry_id: bytes) -> "JournalQuery":
+        """ACSI QueryLogAfter: the entries after ``entry_id`` whose time is at
+        or after ``time_ms``."""
+        return cls(after_entry=(time_ms, bytes(entry_id)))
+
+    def to_native(self) -> dict[str, Any]:
+        """Return the mapping the native ``query_journal`` entry points accept."""
+        return {
+            "start_time_ms": self.start_time_ms,
+            "start_entry": (
+                bytes(self.start_entry) if self.start_entry is not None else None
+            ),
+            "end_time_ms": self.end_time_ms,
+            "max_entries": self.max_entries,
+            "variables": list(self.variables),
+            "after_entry": (
+                (self.after_entry[0], bytes(self.after_entry[1]))
+                if self.after_entry is not None
+                else None
+            ),
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class DataSetMember:
     """Member spec for ``create_data_set()``."""

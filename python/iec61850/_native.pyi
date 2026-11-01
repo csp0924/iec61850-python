@@ -315,6 +315,13 @@ class IedConnection:
     def query_journal_after_entry(
         self, log_ref: str, starting_time_ms: int, entry_id: bytes
     ) -> Awaitable[dict[str, Any]]: ...
+    # `query` is the mapping `iec61850.JournalQuery.to_native()` returns.
+    def query_journal(
+        self, log_ref: str, query: dict[str, Any]
+    ) -> Awaitable[dict[str, Any]]: ...
+    def query_journal_all(
+        self, log_ref: str, query: dict[str, Any]
+    ) -> Awaitable[list[dict[str, Any]]]: ...
 
     # Server identification
     # `{"vendor", "model", "revision", "abstract_syntaxes": [dotted OID, ...]}`.

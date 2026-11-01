@@ -17,6 +17,7 @@ from ._dataclasses import (
     Iec61850ClientConfig,
     IsoConnectionParameters,
     JournalEntry,
+    JournalQuery,
     OriginValue,
     Quality,
     QualityDetail,
@@ -943,6 +944,37 @@ class IedConnection:
         )
         entries = [JournalEntry.from_native_dict(e) for e in raw["entries"]]
         return entries, bool(raw["more_follows"])
+
+    async def query_journal(
+        self, log_ref: str, query: JournalQuery
+    ) -> tuple[list[JournalEntry], bool]:
+        """Send one ReadJournal request for ``query``.
+
+        ``log_ref`` is the LogRef of the journal, ``"<domain>/<item>"`` (e.g.
+        ``"DemoIEDLD0/LLN0$GeneralLog"``). Returns ``(entries, more_follows)``
+        with the entries as the server sent them; when ``more_follows`` is
+        true, resume with ``after_entry`` set to the last entry's
+        ``(time_ms, entry_id)``, or call :meth:`query_journal_all`.
+        """
+        raw = await self._native_conn.query_journal(log_ref, query.to_native())
+        entries = [JournalEntry.from_native_dict(e) for e in raw["entries"]]
+        return entries, bool(raw["more_follows"])
+
+    async def query_journal_all(
+        self, log_ref: str, query: JournalQuery
+    ) -> list[JournalEntry]:
+        """Read every entry ``query`` selects, following ``more_follows``.
+
+        Each continuation keeps the selections of ``query``: ``end_time_ms``
+        bounds every page and ``max_entries`` bounds the total. The result
+        holds each selected entry once, none past ``end_time_ms`` and no more
+        than ``max_entries``, also from a server that repeats the entry it
+        resumes after. A server that reports more entries but sends none not
+        yet received raises ``IedServiceError`` with
+        ``reason == "journal-not-advancing"``.
+        """
+        raw = await self._native_conn.query_journal_all(log_ref, query.to_native())
+        return [JournalEntry.from_native_dict(e) for e in raw]
 
 
 class Iec61850Client:

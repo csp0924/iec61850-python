@@ -24,9 +24,9 @@ use iec61850_client::{
     AcsiClass as RustAcsiClass, ClientError, ClientJournalEntry as RustJournalEntry,
     ClientJournalEntryId as RustJournalEntryId, ClientReport as RustClientReport,
     DataSetMember as RustDataSetMember, DeviceModel as RustDeviceModel,
-    IedConnection as RustIedConnection, RcbHandle as RustRcbHandle,
-    RcbWriteMask as RustRcbWriteMask, ReportOptFlds as RustReportOptFlds,
-    TriggerOptions as RustTriggerOptions,
+    IedConnection as RustIedConnection, JournalQuery as RustJournalQuery,
+    RcbHandle as RustRcbHandle, RcbWriteMask as RustRcbWriteMask,
+    ReportOptFlds as RustReportOptFlds, TriggerOptions as RustTriggerOptions,
 };
 use iec61850_mms::iso::session::SSelector as RustSSelector;
 use iec61850_mms::mms::pdu::common::DataAccessError as RustDataAccessError;
@@ -1881,6 +1881,52 @@ impl PyIedConnection {
         })
     }
 
+    /// Send one ReadJournal request for `query` (a mapping as
+    /// `journal_query_from_dict` reads it).
+    ///
+    /// Resolves to `{"entries": [...], "more_follows": bool}`, the entries as
+    /// the server sent them; see `query_journal_by_time` for the entry shape.
+    fn query_journal<'py>(
+        &self,
+        py: Python<'py>,
+        log_ref: String,
+        query: Bound<'py, PyDict>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let query = journal_query_from_dict(&query)?;
+        let conn = Arc::clone(&self.inner);
+        future_into_py(py, async move {
+            let (entries, more_follows) = conn
+                .query_journal(&log_ref, &query)
+                .await
+                .map_err(|e| map_client_error(e, ErrCtx::Service))?;
+            Python::attach(|py| Ok(journal_result_to_pydict(py, &entries, more_follows)?.unbind()))
+        })
+    }
+
+    /// Read every entry `query` selects, following `moreFollows` request by
+    /// request.
+    ///
+    /// Resolves to the list of entries, each selected entry once, none past
+    /// the end time and no more than the entry count. A server that reports
+    /// more entries but sends none not yet received raises
+    /// `IedServiceError` with `reason == "journal-not-advancing"`.
+    fn query_journal_all<'py>(
+        &self,
+        py: Python<'py>,
+        log_ref: String,
+        query: Bound<'py, PyDict>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let query = journal_query_from_dict(&query)?;
+        let conn = Arc::clone(&self.inner);
+        future_into_py(py, async move {
+            let entries = conn
+                .query_journal_all(&log_ref, &query)
+                .await
+                .map_err(|e| map_client_error(e, ErrCtx::Service))?;
+            Python::attach(|py| Ok(journal_entries_to_pylist(py, &entries)?.unbind()))
+        })
+    }
+
     /// Read the vendor, model and revision of the server (MMS Identify).
     ///
     /// Resolves to `{"vendor": str, "model": str, "revision": str,
@@ -2806,14 +2852,68 @@ fn mms_value_to_pyobject(py: Python<'_>, v: &RustMmsValue) -> PyResult<Py<PyAny>
     Ok(obj)
 }
 
-/// Convert a journal query result into the public Python shape:
-/// ``{"entries": [{"entry_id": bytes, "time_ms": int, "variables": [...]}], "more_follows": bool}``.
-fn journal_result_to_pydict<'py>(
+/// Reads an 8-byte journal EntryID from `value`; `what` names the field in
+/// the error.
+fn journal_entry_id(value: &Bound<'_, PyAny>, what: &str) -> PyResult<RustJournalEntryId> {
+    let bytes: Vec<u8> = value.extract()?;
+    let id: [u8; 8] = bytes.as_slice().try_into().map_err(|_| {
+        PyValueError::new_err(format!(
+            "{what} must be exactly 8 bytes, got {}",
+            bytes.len()
+        ))
+    })?;
+    Ok(RustJournalEntryId::from_bytes(id))
+}
+
+/// Builds a journal query from the mapping `JournalQuery.to_native` returns.
+///
+/// Keys, each optional and `None` when absent: `start_time_ms`,
+/// `start_entry` (8 bytes), `end_time_ms`, `max_entries`, `variables` (a
+/// sequence of data references) and `after_entry` (a `(time_ms, entry_id)`
+/// pair). `start_time_ms` excludes `start_entry`, and `end_time_ms` excludes
+/// `max_entries`, since each pair is one choice on the wire.
+fn journal_query_from_dict(d: &Bound<'_, PyDict>) -> PyResult<RustJournalQuery> {
+    fn opt<'py>(d: &Bound<'py, PyDict>, key: &str) -> PyResult<Option<Bound<'py, PyAny>>> {
+        Ok(d.get_item(key)?.filter(|v| !v.is_none()))
+    }
+    let mut query = RustJournalQuery::new();
+    match (opt(d, "start_time_ms")?, opt(d, "start_entry")?) {
+        (Some(_), Some(_)) => {
+            return Err(PyValueError::new_err(
+                "start_time_ms and start_entry are mutually exclusive",
+            ))
+        }
+        (Some(ms), None) => query = query.with_start_time(ms.extract()?),
+        (None, Some(id)) => query = query.with_start_entry(journal_entry_id(&id, "start_entry")?),
+        (None, None) => {}
+    }
+    match (opt(d, "end_time_ms")?, opt(d, "max_entries")?) {
+        (Some(_), Some(_)) => {
+            return Err(PyValueError::new_err(
+                "end_time_ms and max_entries are mutually exclusive",
+            ))
+        }
+        (Some(ms), None) => query = query.with_end_time(ms.extract()?),
+        (None, Some(n)) => query = query.with_max_entries(n.extract()?),
+        (None, None) => {}
+    }
+    if let Some(vars) = opt(d, "variables")? {
+        let vars: Vec<String> = vars.extract()?;
+        query = query.with_variables(vars);
+    }
+    if let Some(after) = opt(d, "after_entry")? {
+        let (time_ms, id): (u64, Bound<'_, PyAny>) = after.extract()?;
+        query = query.with_entry_to_start_after(time_ms, journal_entry_id(&id, "after_entry id")?);
+    }
+    Ok(query)
+}
+
+/// Convert journal entries into a list of
+/// ``{"entry_id": bytes, "time_ms": int, "variables": [...]}`` dicts.
+fn journal_entries_to_pylist<'py>(
     py: Python<'py>,
     entries: &[RustJournalEntry],
-    more_follows: bool,
-) -> PyResult<Bound<'py, PyDict>> {
-    let out = PyDict::new(py);
+) -> PyResult<Bound<'py, PyList>> {
     let list = PyList::empty(py);
     for e in entries {
         let entry = PyDict::new(py);
@@ -2830,7 +2930,18 @@ fn journal_result_to_pydict<'py>(
         entry.set_item("variables", vars)?;
         list.append(entry)?;
     }
-    out.set_item("entries", list)?;
+    Ok(list)
+}
+
+/// Convert a journal query result into the public Python shape:
+/// ``{"entries": [{"entry_id": bytes, "time_ms": int, "variables": [...]}], "more_follows": bool}``.
+fn journal_result_to_pydict<'py>(
+    py: Python<'py>,
+    entries: &[RustJournalEntry],
+    more_follows: bool,
+) -> PyResult<Bound<'py, PyDict>> {
+    let out = PyDict::new(py);
+    out.set_item("entries", journal_entries_to_pylist(py, entries)?)?;
     out.set_item("more_follows", more_follows)?;
     Ok(out)
 }
