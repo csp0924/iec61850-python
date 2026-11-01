@@ -338,3 +338,99 @@ def test_update_array_before_start_raises() -> None:
     server = _array_server()
     with pytest.raises(RuntimeError, match="not running"):
         server.update_array(ARR_VALS, [1, 2, 3])
+
+
+# ── on_read / on_write context ──────────────────────────────────────────────
+
+
+async def test_on_read_with_context_receives_the_request() -> None:
+    server = _demo_server()
+    seen: list[dict] = []
+
+    def handler(path: str, ctx: dict) -> None:
+        assert path == _demo.SRV_IND1
+        seen.append(ctx)
+        # No server lock is held here, so an update goes through.
+        server.update_bool(_demo.SRV_IND2, True)
+
+    server.on_read(_demo.SRV_IND1, handler, with_context=True)
+    async with server:
+        conn = await IedConnection.connect(server.bound_addr)
+        try:
+            await conn.read_bool(_demo.IND1, FC.ST)
+            await conn.read(f"{_demo.DOMAIN}/GGIO1.Ind1", FC.ST)
+            assert await conn.read_bool(_demo.IND2, FC.ST) is True
+        finally:
+            await conn.disconnect()
+    assert len(seen) == 2
+    leaf, parent = seen
+    assert leaf["path"] == "GGIO1$ST$Ind1$stVal"
+    assert leaf["fc"] == "ST"
+    assert leaf["requested"] == "GGIO1$ST$Ind1$stVal"
+    assert leaf["conn_id"] > 0
+    assert parent["path"] == "GGIO1$ST$Ind1$stVal"
+    assert parent["requested"] == "GGIO1$ST$Ind1"
+    assert parent["conn_id"] == leaf["conn_id"]
+
+
+async def test_on_read_without_context_keeps_the_single_argument() -> None:
+    server = _demo_server()
+    calls: list[str] = []
+
+    def handler(path: str) -> bool:
+        calls.append(path)
+        return True
+
+    server.on_read(_demo.SRV_IND1, handler)
+    async with server:
+        conn = await IedConnection.connect(server.bound_addr)
+        try:
+            assert await conn.read_bool(_demo.IND1, FC.ST) is True
+        finally:
+            await conn.disconnect()
+    assert calls == [_demo.SRV_IND1]
+
+
+async def test_on_write_with_context_receives_the_request() -> None:
+    server = IedServer.from_model_spec(_demo.writable_spec())
+    server.bind("127.0.0.1:0")
+    seen: list[tuple[object, dict]] = []
+    setpoint = f"{_demo.WRITABLE_LD}/GGIO1.SetPt1.setVal"
+
+    def handler(path: str, value: object, ctx: dict) -> bool:
+        assert path == setpoint
+        seen.append((value, ctx))
+        server.update_string(f"{_demo.WRITABLE_LD}/GGIO1.Label.setSrc", "written")
+        return True
+
+    server.on_write(setpoint, handler, with_context=True)
+    async with server:
+        conn = await IedConnection.connect(server.bound_addr)
+        try:
+            await conn.write_int32(_demo.WRITABLE_SETPOINT, FC.SP, 42)
+            assert await conn.read_int32(_demo.WRITABLE_SETPOINT, FC.SP) == 42
+            assert await conn.read_string(_demo.WRITABLE_LABEL, FC.SP) == "written"
+        finally:
+            await conn.disconnect()
+    assert len(seen) == 1
+    value, ctx = seen[0]
+    assert value == 42
+    assert ctx["path"] == "GGIO1$SP$SetPt1$setVal"
+    assert ctx["fc"] == "SP"
+    assert ctx["requested"] == "GGIO1$SP$SetPt1$setVal"
+    assert ctx["conn_id"] > 0
+
+
+async def test_on_write_without_context_keeps_two_arguments() -> None:
+    server = IedServer.from_model_spec(_demo.writable_spec())
+    server.bind("127.0.0.1:0")
+    calls: list[tuple[str, object]] = []
+    setpoint = f"{_demo.WRITABLE_LD}/GGIO1.SetPt1.setVal"
+    server.on_write(setpoint, lambda p, v: calls.append((p, v)) or True)
+    async with server:
+        conn = await IedConnection.connect(server.bound_addr)
+        try:
+            await conn.write_int32(_demo.WRITABLE_SETPOINT, FC.SP, 7)
+        finally:
+            await conn.disconnect()
+    assert calls == [(setpoint, 7)]

@@ -3489,11 +3489,13 @@ enum PendingHandler {
         canonical: String,
         user_path: String,
         callback: Py<PyAny>,
+        with_context: bool,
     },
     Write {
         canonical: String,
         user_path: String,
         callback: Py<PyAny>,
+        with_context: bool,
     },
     Control(PendingControl),
     Dataset(PendingDataset),
@@ -3753,10 +3755,12 @@ async fn server_do_start(
                 canonical,
                 user_path,
                 callback,
+                with_context,
             } => {
                 let h: Arc<dyn RustReadHandler> = Arc::new(PyReadHandler {
                     user_path,
                     callback,
+                    with_context,
                 });
                 server_arc
                     .install_read_handler(&canonical, h)
@@ -3766,10 +3770,12 @@ async fn server_do_start(
                 canonical,
                 user_path,
                 callback,
+                with_context,
             } => {
                 let h: Arc<dyn RustWriteHandler> = Arc::new(PyWriteHandler {
                     user_path,
                     callback,
+                    with_context,
                 });
                 server_arc
                     .install_write_access_handler(&canonical, h)
@@ -4213,10 +4219,30 @@ fn py_err_to_data_access(py: Python<'_>, err: &PyErr) -> RustDataAccessError {
     DEFAULT_HANDLER_ERROR
 }
 
+/// The ``ctx`` dict a handler registered with ``with_context=True``
+/// receives: ``path`` and ``requested`` in the canonical
+/// ``LN$FC$DO[$DA]*`` form, ``fc`` as its two-letter token, and ``conn_id``.
+fn handler_context_dict<'py>(
+    py: Python<'py>,
+    path: &str,
+    fc: RustFC,
+    conn_id: u64,
+    requested: &str,
+) -> PyResult<Bound<'py, PyDict>> {
+    let ctx = PyDict::new(py);
+    ctx.set_item("path", path)?;
+    ctx.set_item("fc", fc.as_str())?;
+    ctx.set_item("conn_id", conn_id)?;
+    ctx.set_item("requested", requested)?;
+    Ok(ctx)
+}
+
 /// Rust-side adapter that calls a Python callable for each read.
 struct PyReadHandler {
     user_path: String,
     callback: Py<PyAny>,
+    /// Pass the read context as a second argument.
+    with_context: bool,
 }
 
 impl std::fmt::Debug for PyReadHandler {
@@ -4228,10 +4254,16 @@ impl std::fmt::Debug for PyReadHandler {
 }
 
 impl RustReadHandler for PyReadHandler {
-    fn read(&self, _ctx: &RustReadContext<'_>) -> RustReadOutcome {
+    fn read(&self, ctx: &RustReadContext<'_>) -> RustReadOutcome {
         Python::attach(|py| {
             let cb = self.callback.bind(py);
-            match cb.call1((self.user_path.as_str(),)) {
+            let called = if self.with_context {
+                handler_context_dict(py, ctx.path, ctx.fc, ctx.conn_id, ctx.requested)
+                    .and_then(|c| cb.call1((self.user_path.as_str(), c)))
+            } else {
+                cb.call1((self.user_path.as_str(),))
+            };
+            match called {
                 Ok(result) => {
                     if result.is_none() {
                         RustReadOutcome::CacheMiss
@@ -4256,6 +4288,8 @@ impl RustReadHandler for PyReadHandler {
 struct PyWriteHandler {
     user_path: String,
     callback: Py<PyAny>,
+    /// Pass the write context as a third argument.
+    with_context: bool,
 }
 
 impl std::fmt::Debug for PyWriteHandler {
@@ -4267,14 +4301,20 @@ impl std::fmt::Debug for PyWriteHandler {
 }
 
 impl RustWriteHandler for PyWriteHandler {
-    fn on_write(&self, _ctx: &RustWriteContext<'_>, value: &RustMmsValue) -> RustWriteOutcome {
+    fn on_write(&self, ctx: &RustWriteContext<'_>, value: &RustMmsValue) -> RustWriteOutcome {
         Python::attach(|py| {
             let py_value = match mms_value_to_pyobject(py, value) {
                 Ok(v) => v,
                 Err(_) => return RustWriteOutcome::Reject(RustDataAccessError::TypeInconsistent),
             };
             let cb = self.callback.bind(py);
-            match cb.call1((self.user_path.as_str(), py_value)) {
+            let called = if self.with_context {
+                handler_context_dict(py, ctx.path, ctx.fc, ctx.conn_id, ctx.requested)
+                    .and_then(|c| cb.call1((self.user_path.as_str(), py_value, c)))
+            } else {
+                cb.call1((self.user_path.as_str(), py_value))
+            };
+            match called {
                 Ok(result) => {
                     if result.is_none() {
                         RustWriteOutcome::AcceptNoUpdate
@@ -6073,11 +6113,30 @@ impl PyIedServer {
     ///   `DataAccessError` variant; otherwise ``ObjectAccessDenied`` is
     ///   used.
     ///
+    /// With ``with_context=True`` the callback is called as
+    /// ``callback(path, ctx)``. ``ctx`` is a dict: ``path`` is the canonical
+    /// ``"LN$FC$DO[$DA]*"`` path the handler is registered against, ``fc``
+    /// its functional constraint, ``conn_id`` the association the request
+    /// arrived on (0 before one is established), and ``requested`` the path
+    /// the client named. The server asks the handler not only for a read of
+    /// its own path but for a read of a node above it (its data object, its
+    /// logical node ``"LN"`` or its group ``"LN$FC"``), of a node below it,
+    /// and of a data set holding it; ``requested`` tells them apart.
+    ///
+    /// The server holds no lock while the callback runs, so it may call the
+    /// ``update_*`` methods.
+    ///
     /// Registration is allowed before `start()` (queued) and during
     /// `Running` (installed immediately). Re-registering the same path
     /// replaces the previous callback.
-    #[pyo3(signature = (path, callback))]
-    fn on_read(&self, py: Python<'_>, path: &str, callback: Py<PyAny>) -> PyResult<()> {
+    #[pyo3(signature = (path, callback, *, with_context=false))]
+    fn on_read(
+        &self,
+        py: Python<'_>,
+        path: &str,
+        callback: Py<PyAny>,
+        with_context: bool,
+    ) -> PyResult<()> {
         if !callback.bind(py).is_callable() {
             return Err(PyValueError::new_err("on_read: callback must be callable"));
         }
@@ -6092,6 +6151,7 @@ impl PyIedServer {
                     canonical,
                     user_path,
                     callback,
+                    with_context,
                 });
                 Ok(())
             }
@@ -6099,6 +6159,7 @@ impl PyIedServer {
                 let h: Arc<dyn RustReadHandler> = Arc::new(PyReadHandler {
                     user_path,
                     callback,
+                    with_context,
                 });
                 server
                     .install_read_handler(&canonical, h)
@@ -6220,11 +6281,24 @@ impl PyIedServer {
     ///   `DataAccessError` variant; otherwise ``ObjectAccessDenied`` is
     ///   used.
     ///
+    /// With ``with_context=True`` the callback is called as
+    /// ``callback(path, value, ctx)``, ``ctx`` the dict ``on_read`` describes:
+    /// ``path``, ``fc``, ``conn_id``, and ``requested``, the path the client
+    /// named, which is the handler's own path, a node above it or a node
+    /// below it. The server holds no lock while the callback runs, so it may
+    /// call the ``update_*`` methods.
+    ///
     /// Registration is allowed before `start()` (queued) and during
     /// `Running` (installed immediately). Re-registering the same path
     /// replaces the previous callback.
-    #[pyo3(signature = (path, callback))]
-    fn on_write(&self, py: Python<'_>, path: &str, callback: Py<PyAny>) -> PyResult<()> {
+    #[pyo3(signature = (path, callback, *, with_context=false))]
+    fn on_write(
+        &self,
+        py: Python<'_>,
+        path: &str,
+        callback: Py<PyAny>,
+        with_context: bool,
+    ) -> PyResult<()> {
         if !callback.bind(py).is_callable() {
             return Err(PyValueError::new_err("on_write: callback must be callable"));
         }
@@ -6239,6 +6313,7 @@ impl PyIedServer {
                     canonical,
                     user_path,
                     callback,
+                    with_context,
                 });
                 Ok(())
             }
@@ -6246,6 +6321,7 @@ impl PyIedServer {
                 let h: Arc<dyn RustWriteHandler> = Arc::new(PyWriteHandler {
                     user_path,
                     callback,
+                    with_context,
                 });
                 server
                     .install_write_access_handler(&canonical, h)
