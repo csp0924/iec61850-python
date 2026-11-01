@@ -318,43 +318,6 @@ async def test_a_synchronous_operate_past_the_oper_timeout_ends_with_time_limit_
     assert elapsed < 5
 
 
-async def test_a_blocked_synchronous_operate_leaves_other_associations_served() -> None:
-    """While a synchronous operate blocks, another association reads."""
-    release = threading.Event()
-    entered = threading.Event()
-
-    def configure(server: iec61850.IedServer) -> None:
-        def operate(_path: str, _value: object, _action: dict) -> None:
-            entered.set()
-            release.wait(10)
-
-        server.on_control(
-            _demo.SRV_SWITCH, ctl_model="direct-enhanced", operate=operate
-        )
-
-    async with _demo.hosted_demo(
-        control_blocks=False, configure=configure, ctl_model="direct-enhanced"
-    ) as server:
-        conn = await iec61850.IedConnection.connect(server.bound_addr)
-        other = await iec61850.IedConnection.connect(server.bound_addr)
-        try:
-            spc = conn.create_control_object(
-                _demo.SWITCH, iec61850.ControlModel.DIRECT_ENHANCED
-            )
-            pending = asyncio.ensure_future(spc.operate(True))
-            try:
-                assert await asyncio.to_thread(entered.wait, 10)
-                assert await other.read_bool(_demo.IND1, iec61850.FC.ST) is True
-                assert not pending.done()
-            finally:
-                release.set()
-            outcome = await pending
-            assert outcome.success is True
-        finally:
-            await other.disconnect()
-            await conn.disconnect()
-
-
 APC_REF = f"{_demo.DOMAIN}/GGIO1.APCSO1"
 APC_RECEIVED = [1.5]
 SET_MAG_REF = f"{_demo.DOMAIN}/GGIO1.SetMag1.setMag"

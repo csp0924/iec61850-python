@@ -7268,7 +7268,11 @@ impl PyIedServer {
     /// declares no `ctlModel`, `sboTimeout`, `sboClass` or `operTimeout`
     /// attribute; a declared attribute takes precedence. When the time limit
     /// expires the command ends with ``TimeLimitOver``; an ``operate`` still
-    /// running is not interrupted, and its result is ignored.
+    /// running is not interrupted, and its result is ignored. The control
+    /// object may accept the next command meanwhile, so an abandoned
+    /// synchronous ``operate`` can run alongside the callback of that
+    /// command; a callback has to tolerate this, for instance with a lock or
+    /// by checking ``ctl_num`` in the action.
     ///
     /// The server calls ``check``, and a synchronous ``operate`` or ``wait``,
     /// on a thread of its bounded blocking pool, not on a runtime worker,
