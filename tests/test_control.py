@@ -98,8 +98,8 @@ async def test_sbo_enhanced_select_with_value_then_operate() -> None:
 async def test_direct_normal_check_blocked() -> None:
     """A check handler answering BlockedByInterlocking fails the Operate.
 
-    On direct-normal the rejection rides on the confirmed-error rather than a
-    CommandTermination-, so the reported add cause is Unknown.
+    The server reports the refusal with a LastApplError ahead of the negative
+    response, so the outcome carries its add cause.
     """
     async with _demo.hosted_control("direct-normal", blocked=True) as server:
         conn = await iec61850.IedConnection.connect(server.bound_addr)
@@ -109,7 +109,7 @@ async def test_direct_normal_check_blocked() -> None:
             )
             outcome = await spc.operate(True)
             assert outcome.success is False
-            assert outcome.add_cause is iec61850.ControlAddCause.UNKNOWN
+            assert outcome.add_cause is iec61850.ControlAddCause.BLOCKED_BY_INTERLOCKING
         finally:
             await conn.disconnect()
 

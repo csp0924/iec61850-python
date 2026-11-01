@@ -493,7 +493,6 @@ class IedConnection:
             verify_hostname=tls.verify_hostname,
             allow_only_known_peers=tls.allow_only_known_peers,
             known_peer_pems=list(tls.known_peer_pems),
-            chain_validation=tls.chain_validation,
             time_validation=tls.time_validation,
             crl_pems=list(tls.crl_pems),
             min_tls_version=tls.min_version.value,

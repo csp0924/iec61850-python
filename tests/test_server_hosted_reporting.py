@@ -14,7 +14,8 @@ import queue
 from iec61850 import FC, IedConnection, IedServer, RcbWriteMask
 
 # Minimal SCL: LLN0 plus GGIO1 carrying a Boolean status point, a Float32
-# measurand, and an Int32 setpoint.
+# measurand, and an Int32 setpoint. An attribute only reports the triggers it
+# declares, so the status and measurand attributes carry dchg / qchg.
 SERVER_SCL = """<?xml version="1.0" encoding="UTF-8"?>
 <SCL xmlns="http://www.iec.ch/61850/2003/SCL">
   <IED name="IED1" manufacturer="ACME">
@@ -42,13 +43,13 @@ SERVER_SCL = """<?xml version="1.0" encoding="UTF-8"?>
       <DA name="t" fc="ST" bType="Timestamp"/>
     </DOType>
     <DOType id="SPS_1" cdc="SPS">
-      <DA name="stVal" fc="ST" bType="BOOLEAN"/>
-      <DA name="q" fc="ST" bType="Quality"/>
+      <DA name="stVal" fc="ST" bType="BOOLEAN" dchg="true"/>
+      <DA name="q" fc="ST" bType="Quality" qchg="true"/>
       <DA name="t" fc="ST" bType="Timestamp"/>
     </DOType>
     <DOType id="MV_1" cdc="MV">
-      <DA name="mag" fc="MX" bType="Struct" type="AnalogueValue"/>
-      <DA name="q" fc="MX" bType="Quality"/>
+      <DA name="mag" fc="MX" bType="Struct" type="AnalogueValue" dchg="true"/>
+      <DA name="q" fc="MX" bType="Quality" qchg="true"/>
       <DA name="t" fc="MX" bType="Timestamp"/>
     </DOType>
     <DOType id="ING_1" cdc="ING">

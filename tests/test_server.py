@@ -599,10 +599,13 @@ async def test_on_control_direct_normal_sync_operate() -> None:
         "synchro_check",
         "interlock_check",
         "is_select",
-        "ctl_time_ms",
+        "t",
+        "conn_id",
         "origin",
     }
     assert "or_cat" in action["origin"]
+    assert isinstance(action["t"], bytes) and len(action["t"]) == 8
+    assert isinstance(action["conn_id"], int)
 
 
 async def test_on_control_async_operate() -> None:
@@ -662,7 +665,14 @@ async def test_on_control_check_reject_maps_to_add_cause() -> None:
 
 
 async def test_on_control_async_reject_maps_to_add_cause() -> None:
-    from iec61850 import ControlModel, IedControlError
+    """An async `wait` check that refuses answers the Operate negatively.
+
+    Under normal security the outcome of the command itself is not reported,
+    so a refusal the client sees comes from `check` or `wait`.
+    """
+    from iec61850 import ControlAddCause, ControlModel, IedControlError
+
+    ran = asyncio.Event()
 
     async def deny(_path: str, _value: object, _action: dict) -> None:
         await asyncio.sleep(0)
@@ -670,10 +680,13 @@ async def test_on_control_async_reject_maps_to_add_cause() -> None:
         err.add_cause = "BlockedByProcess"
         raise err
 
+    def operate(_path: str, _value: object, _action: dict) -> None:
+        ran.set()
+
     s = _demo_server()
     s.bind("127.0.0.1:0")
     s.on_control(
-        DEMO_SPC, ctl_model="direct-normal", operate=deny
+        DEMO_SPC, ctl_model="direct-normal", wait=deny, operate=operate
     )
 
     async with s:
@@ -684,8 +697,10 @@ async def test_on_control_async_reject_maps_to_add_cause() -> None:
             )
             outcome = await ctrl.operate(True)
             assert not outcome.success
+            assert outcome.add_cause is ControlAddCause.BLOCKED_BY_PROCESS
         finally:
             await conn.disconnect()
+    assert not ran.is_set()
 
 
 async def test_on_control_can_register_while_running() -> None:
@@ -1122,7 +1137,7 @@ async def test_log_value_persists_and_query_returns_entries() -> None:
         log_ref="IED1GenericIO/LLN0$GeneralLog",
         trg_ops=["data_changed"],
     )
-    log_ref = "IED1GenericIO/LLN0$LG$lcb01"
+    log_ref = "IED1GenericIO/LLN0$GeneralLog"
     base = 1_700_000_000_000
     async with s:
         for i in range(5):
@@ -1191,7 +1206,7 @@ async def test_log_value_storage_capacity_evicts_oldest() -> None:
         dataset="LLN0$evlogds",
         storage_capacity=3,
     )
-    log_ref = "IED1GenericIO/LLN0$LG$lcb01"
+    log_ref = "IED1GenericIO/LLN0$GeneralLog"
     base = 1_700_000_000_000
     async with s:
         for i in range(5):

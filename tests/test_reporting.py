@@ -27,7 +27,7 @@ async def test_get_rcb_values_reads_defaults(demo_server: str) -> None:
         rcb = await conn.get_rcb_values(RCB_REF)
         assert rcb.object_reference == RCB_REF
         assert rcb.is_buffered is False
-        assert rcb.dataset == _demo.DS_MEAS
+        assert rcb.dataset == f"{_demo.DOMAIN}/{_demo.DS_MEAS}"
         assert rcb.trigger_options.data_change is True
         assert rcb.rpt_ena is False
     finally:

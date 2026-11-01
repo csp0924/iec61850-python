@@ -147,7 +147,6 @@ class IedConnection:
         verify_hostname: bool = ...,
         allow_only_known_peers: bool = ...,
         known_peer_pems: Sequence[bytes] = ...,
-        chain_validation: bool = ...,
         time_validation: bool = ...,
         crl_pems: Sequence[bytes] = ...,
         min_tls_version: str = ...,
@@ -314,7 +313,6 @@ class IedServer:
         client_ca_pem: bytes | None = ...,
         allow_only_known_peers: bool = ...,
         known_peer_pems: Sequence[bytes] = ...,
-        chain_validation: bool = ...,
         time_validation: bool = ...,
         crl_pems: Sequence[bytes] = ...,
         session_resumption: bool = ...,
@@ -359,6 +357,7 @@ class IedServer:
         wait: Callable[..., Any] | None = ...,
         sbo_timeout_ms: int = ...,
         sbo_class: str = ...,
+        oper_timeout_ms: int = ...,
     ) -> None: ...
     def on_write(self, path: str, callback: Callable[..., Any]) -> None: ...
 

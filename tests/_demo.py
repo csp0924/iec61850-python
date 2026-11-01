@@ -43,7 +43,8 @@ FREQ = f"{DOMAIN}/MMXU1.Hz.mag.f"
 DS_MEAS = "LLN0$dsMeas"
 DS_STATUS = "LLN0$dsStatus"
 URCB_REF = f"{DOMAIN}/LLN0$RP$urcbMeas"
-LOG_REF = f"{DOMAIN}/LLN0$LG$evlog"
+# A journal is named by the LCB's LogRef, not by the LCB itself.
+LOG_REF = f"{DOMAIN}/LLN0$GeneralLog"
 
 # Journal fixture: 20 entries, 100 ms apart, alternating Boolean values.
 JOURNAL_BASE_MS = 1_700_000_000_000
@@ -127,14 +128,36 @@ def seed(server: iec61850.IedServer) -> None:
     server.update_float32(SRV_FREQ, 50.0)
 
 
+# SCL spelling of each control model token, as `ctlModel` declares it.
+_SCL_CTL_MODEL = {
+    "status-only": "status-only",
+    "direct-normal": "direct-with-normal-security",
+    "sbo-normal": "sbo-with-normal-security",
+    "direct-enhanced": "direct-with-enhanced-security",
+    "sbo-enhanced": "sbo-with-enhanced-security",
+}
+
+
 @asynccontextmanager
 async def hosted_demo(
     *,
     control_blocks: bool = True,
     configure: Callable[[iec61850.IedServer], None] | None = None,
+    ctl_model: str | None = None,
 ) -> AsyncIterator[iec61850.IedServer]:
-    """Start a server from `models/demo.cid` on a free loopback port."""
-    server = iec61850.IedServer.from_scl(DEMO_CID, ied_name=IED_NAME)
+    """Start a server from `models/demo.cid` on a free loopback port.
+
+    `ctl_model` rewrites the `ctlModel` the CID declares for `GGIO1.SPCSO1`;
+    a declared `ctlModel` decides the control model the server runs.
+    """
+    if ctl_model is None:
+        server = iec61850.IedServer.from_scl(DEMO_CID, ied_name=IED_NAME)
+    else:
+        text = DEMO_CID.read_text(encoding="utf-8").replace(
+            "<Val>direct-with-normal-security</Val>",
+            f"<Val>{_SCL_CTL_MODEL[ctl_model]}</Val>",
+        )
+        server = iec61850.IedServer.from_scl_str(text, ied_name=IED_NAME)
     server.bind("127.0.0.1:0")
     if control_blocks:
         wire_control_blocks(server)
@@ -175,7 +198,9 @@ async def hosted_control(
             sbo_class=sbo_class,
         )
 
-    async with hosted_demo(control_blocks=False, configure=configure) as server:
+    async with hosted_demo(
+        control_blocks=False, configure=configure, ctl_model=ctl_model
+    ) as server:
         yield server
 
 

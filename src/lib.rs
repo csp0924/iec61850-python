@@ -54,11 +54,11 @@ use iec61850_model::value::MmsValue as RustMmsValue;
 use iec61850_model::FC as RustFC;
 use iec61850_scl::raw::{
     DataTypeTemplates as RustDtt, GseControlType as RustGseControlType, OptionFieldsBits,
-    RawAccessPoint, RawBda, RawDaDef, RawDaType, RawDai, RawDataInstance, RawDataSet, RawDoDef,
-    RawDoType, RawDoi, RawEnumType, RawFcda, RawGseControl, RawIed, RawLNodeType, RawLogControl,
-    RawLogicalDevice, RawLogicalNode, RawReportControlBlock, RawSampledValueControl, RawSdi,
-    RawSdoDef, RawServer, RawSettingControl, RawVal, SampledValueSmpMod as RustSmpMod, SmvOptsBits,
-    TriggerOptionsBits,
+    RawAccessPoint, RawBda, RawCount, RawDaDef, RawDaType, RawDai, RawDataInstance, RawDataSet,
+    RawDoDef, RawDoType, RawDoi, RawEnumType, RawFcda, RawGseControl, RawIed, RawLNodeType,
+    RawLogControl, RawLogicalDevice, RawLogicalNode, RawReportControlBlock, RawSampledValueControl,
+    RawSdi, RawSdoDef, RawServer, RawSettingControl, RawVal, SampledValueSmpMod as RustSmpMod,
+    SmvOptsBits, TriggerOptionsBits,
 };
 use iec61850_scl::{ResolvedScl as RustResolvedScl, SclParseError as RustSclParseError};
 use iec61850_server::config::IedServerConfig as RustIedServerConfig;
@@ -159,10 +159,9 @@ create_exception!(
 
 /// Context for mapping `ClientError` → Python exception.
 ///
-/// `connect()` failures are categorically `IedConnectionError` regardless of
-/// the underlying variant (TCP refused / TLS handshake / ACSE reject all
-/// surface as `ClientError::Mms(_)` in this version, and "MMS service error"
-/// is a misleading classification at connect time).
+/// While connecting, every failure other than a session refusal surfaces as
+/// `IedConnectionError`: an MMS service error is a misleading classification
+/// before the association exists.
 #[derive(Copy, Clone)]
 enum ErrCtx {
     Connect,
@@ -193,38 +192,31 @@ fn session_refused_error(
 }
 
 fn map_client_error(err: ClientError, ctx: ErrCtx) -> PyErr {
+    let message = err.to_string();
     match (err, ctx) {
         (ClientError::NotConnected, _) => {
             IedConnectionError::new_err("IedConnection is not connected")
         }
         (
-            err @ ClientError::SessionRefused {
+            ClientError::SessionRefused {
                 reason_code,
                 transport_disconnect,
                 provider_reason,
+                ..
             },
             _,
-        ) => session_refused_error(
-            err.to_string(),
-            reason_code,
-            transport_disconnect,
-            provider_reason,
-        ),
-        (err, ErrCtx::Connect) => IedConnectionError::new_err(err.to_string()),
-        (err @ ClientError::TypeMismatch { .. }, _) => IedDataAccessError::new_err(err.to_string()),
-        (err @ ClientError::UnexpectedValueType { .. }, _) => {
-            IedDataAccessError::new_err(err.to_string())
-        }
-        (err @ ClientError::InvalidBinaryTimeLen { .. }, _) => {
-            IedDataAccessError::new_err(err.to_string())
-        }
-        (err @ ClientError::InvalidArgument(_), _) => PyValueError::new_err(err.to_string()),
-        (err @ ClientError::InvalidRptId { .. }, _) => PyValueError::new_err(err.to_string()),
-        (err @ ClientError::AlreadyRegistered(_), _) => PyValueError::new_err(err.to_string()),
-        (err @ ClientError::NotFound(_), _) => PyValueError::new_err(err.to_string()),
-        (err @ ClientError::ParseFailed(_), _) => IedDataAccessError::new_err(err.to_string()),
-        (err @ ClientError::DataAccessError(_), _) => IedDataAccessError::new_err(err.to_string()),
-        (err @ ClientError::Mms(_), _) => IedServiceError::new_err(err.to_string()),
+        ) => session_refused_error(message, reason_code, transport_disconnect, provider_reason),
+        (_, ErrCtx::Connect) => IedConnectionError::new_err(message),
+        (ClientError::TypeMismatch { .. }, _)
+        | (ClientError::UnexpectedValueType { .. }, _)
+        | (ClientError::InvalidBinaryTimeLen { .. }, _)
+        | (ClientError::ParseFailed(_), _)
+        | (ClientError::DataAccessError(_), _) => IedDataAccessError::new_err(message),
+        (ClientError::InvalidArgument(_), _)
+        | (ClientError::InvalidRptId { .. }, _)
+        | (ClientError::AlreadyRegistered(_), _)
+        | (ClientError::NotFound(_), _) => PyValueError::new_err(message),
+        (_, _) => IedServiceError::new_err(message),
     }
 }
 
@@ -248,6 +240,7 @@ fn data_access_name(err: RustDataAccessError) -> &'static str {
         RustDataAccessError::ObjectAccessUnsupported => "ObjectAccessUnsupported",
         RustDataAccessError::ObjectNonExistent => "ObjectNonExistent",
         RustDataAccessError::ObjectValueInvalid => "ObjectValueInvalid",
+        _ => "Unknown",
     }
 }
 
@@ -428,57 +421,50 @@ fn iso_params_from_dict(iso: &Bound<'_, PyDict>) -> PyResult<RustIsoConnectionPa
         }
     }
 
-    let defaults = RustIsoConnectionParameters::default();
-    Ok(RustIsoConnectionParameters {
-        local_t_sel: iso_selector(
-            iso,
-            "local_t_sel",
-            defaults.local_t_sel,
-            RustTSelector::from_slice,
-        )?,
-        remote_t_sel: iso_selector(
-            iso,
-            "remote_t_sel",
-            defaults.remote_t_sel,
-            RustTSelector::from_slice,
-        )?,
-        local_s_sel: iso_selector(
-            iso,
-            "local_s_sel",
-            defaults.local_s_sel,
-            RustSSelector::from_slice,
-        )?,
-        remote_s_sel: iso_selector(
-            iso,
-            "remote_s_sel",
-            defaults.remote_s_sel,
-            RustSSelector::from_slice,
-        )?,
-        local_p_sel: iso_selector(
-            iso,
-            "local_p_sel",
-            defaults.local_p_sel,
-            RustPSelector::from_slice,
-        )?,
-        remote_p_sel: iso_selector(
-            iso,
-            "remote_p_sel",
-            defaults.remote_p_sel,
-            RustPSelector::from_slice,
-        )?,
-        local_ap_title: iso_ap_title(iso, "local_ap_title", defaults.local_ap_title)?,
-        remote_ap_title: iso_ap_title(iso, "remote_ap_title", defaults.remote_ap_title)?,
-        local_ae_qualifier: iso_ae_qualifier(
-            iso,
-            "local_ae_qualifier",
-            defaults.local_ae_qualifier,
-        )?,
-        remote_ae_qualifier: iso_ae_qualifier(
-            iso,
-            "remote_ae_qualifier",
-            defaults.remote_ae_qualifier,
-        )?,
-    })
+    let mut params = RustIsoConnectionParameters::default();
+    params.local_t_sel = iso_selector(
+        iso,
+        "local_t_sel",
+        params.local_t_sel,
+        RustTSelector::from_slice,
+    )?;
+    params.remote_t_sel = iso_selector(
+        iso,
+        "remote_t_sel",
+        params.remote_t_sel,
+        RustTSelector::from_slice,
+    )?;
+    params.local_s_sel = iso_selector(
+        iso,
+        "local_s_sel",
+        params.local_s_sel,
+        RustSSelector::from_slice,
+    )?;
+    params.remote_s_sel = iso_selector(
+        iso,
+        "remote_s_sel",
+        params.remote_s_sel,
+        RustSSelector::from_slice,
+    )?;
+    params.local_p_sel = iso_selector(
+        iso,
+        "local_p_sel",
+        params.local_p_sel,
+        RustPSelector::from_slice,
+    )?;
+    params.remote_p_sel = iso_selector(
+        iso,
+        "remote_p_sel",
+        params.remote_p_sel,
+        RustPSelector::from_slice,
+    )?;
+    params.local_ap_title = iso_ap_title(iso, "local_ap_title", params.local_ap_title.take())?;
+    params.remote_ap_title = iso_ap_title(iso, "remote_ap_title", params.remote_ap_title.take())?;
+    params.local_ae_qualifier =
+        iso_ae_qualifier(iso, "local_ae_qualifier", params.local_ae_qualifier)?;
+    params.remote_ae_qualifier =
+        iso_ae_qualifier(iso, "remote_ae_qualifier", params.remote_ae_qualifier)?;
+    Ok(params)
 }
 
 /// Parse a Python ``TlsVersion`` token into the native enum.
@@ -495,8 +481,8 @@ fn parse_tls_version(token: &str) -> PyResult<iec61850_tls::TlsVersion> {
 /// Build a `TlsConnector` from a `TlsConfig` payload.
 ///
 /// Defaults (matching the strict IEC 62351-3 profile): TLS 1.2-1.3, IEC
-/// 62351-3 cipher whitelist, chain validation on, time validation on, SNI
-/// verification on, allow-only-known peers off.
+/// 62351-3 cipher whitelist, time validation on, SNI verification on,
+/// allow-only-known peers off. The certificate chain is always validated.
 #[allow(clippy::too_many_arguments)]
 fn build_tls_connector(
     ca_pem: &[u8],
@@ -505,7 +491,6 @@ fn build_tls_connector(
     verify_hostname: bool,
     allow_only_known_peers: bool,
     known_peer_pems: &[Vec<u8>],
-    chain_validation: bool,
     time_validation: bool,
     crl_pems: &[Vec<u8>],
     min_version: iec61850_tls::TlsVersion,
@@ -534,7 +519,6 @@ fn build_tls_connector(
     }
     builder = builder
         .allow_only_known_peers(allow_only_known_peers)
-        .chain_validation(chain_validation)
         .time_validation(time_validation)
         .min_version(min_version)
         .max_version(max_version);
@@ -553,7 +537,8 @@ fn build_tls_connector(
 ///
 /// Server requires a leaf cert chain + private key; client-auth knobs are
 /// optional and default to the strict IEC 62351-3 profile (TLS 1.2-1.3,
-/// cipher whitelist, chain + time validation on, no client-cert pinning).
+/// cipher whitelist, time validation on, no client-cert pinning). A client
+/// chain is always validated against `client_ca_pem`.
 fn build_tls_acceptor(pt: &PendingTls) -> PyResult<iec61850_tls::TlsAcceptor> {
     let mut builder = iec61850_tls::TlsConfigBuilder::new()
         .with_cert_pem(&pt.server_cert_pem, &pt.server_key_pem)
@@ -570,7 +555,6 @@ fn build_tls_acceptor(pt: &PendingTls) -> PyResult<iec61850_tls::TlsAcceptor> {
     }
     builder = builder
         .allow_only_known_peers(pt.allow_only_known_peers)
-        .chain_validation(pt.chain_validation)
         .time_validation(pt.time_validation)
         .session_resumption(pt.session_resumption)
         .min_version(pt.min_version)
@@ -592,7 +576,7 @@ fn build_tls_acceptor(pt: &PendingTls) -> PyResult<iec61850_tls::TlsAcceptor> {
 /// `None` leaves the corresponding default in place.
 fn build_ied_connection(
     request_timeout_ms: Option<u64>,
-    max_outstanding: Option<u32>,
+    max_outstanding: Option<u16>,
     local_max_pdu_size: Option<u32>,
     iso: Option<RustIsoConnectionParameters>,
 ) -> RustIedConnection {
@@ -647,7 +631,7 @@ impl PyIedConnection {
         addr: String,
         timeout_ms: u64,
         request_timeout_ms: Option<u64>,
-        max_outstanding: Option<u32>,
+        max_outstanding: Option<u16>,
         local_max_pdu_size: Option<u32>,
         iso: Option<Bound<'py, PyDict>>,
     ) -> PyResult<Bound<'py, PyAny>> {
@@ -690,7 +674,6 @@ impl PyIedConnection {
         verify_hostname = true,
         allow_only_known_peers = false,
         known_peer_pems = Vec::new(),
-        chain_validation = true,
         time_validation = true,
         crl_pems = Vec::new(),
         min_tls_version = "tls1.2".to_string(),
@@ -713,14 +696,13 @@ impl PyIedConnection {
         verify_hostname: bool,
         allow_only_known_peers: bool,
         known_peer_pems: Vec<Vec<u8>>,
-        chain_validation: bool,
         time_validation: bool,
         crl_pems: Vec<Vec<u8>>,
         min_tls_version: String,
         max_tls_version: String,
         timeout_ms: u64,
         request_timeout_ms: Option<u64>,
-        max_outstanding: Option<u32>,
+        max_outstanding: Option<u16>,
         local_max_pdu_size: Option<u32>,
         iso: Option<Bound<'py, PyDict>>,
     ) -> PyResult<Bound<'py, PyAny>> {
@@ -738,7 +720,6 @@ impl PyIedConnection {
             verify_hostname,
             allow_only_known_peers,
             &known_peer_pems,
-            chain_validation,
             time_validation,
             &crl_pems,
             min_version,
@@ -978,13 +959,10 @@ impl PyIedConnection {
                 RustMmsValue::BitString { padding, data } => {
                     Python::attach(|py| Ok((PyBytes::new(py, &data).unbind(), padding)))
                 }
-                other => Err(map_client_error(
-                    ClientError::UnexpectedValueType {
-                        expected: "BitString",
-                        got: mms_variant_name(&other),
-                    },
-                    ErrCtx::Service,
-                )),
+                other => Err(IedDataAccessError::new_err(format!(
+                    "unexpected value type: expected BitString, got {}",
+                    mms_variant_name(&other)
+                ))),
             }
         })
     }
@@ -1773,10 +1751,11 @@ impl PyControlObjectClient {
         let handle = Arc::clone(&self.inner);
         future_into_py(py, async move {
             let guard = handle.lock().await;
-            guard
+            let outcome = guard
                 .select()
                 .await
-                .map_err(|e| map_client_error(e, ErrCtx::Service))
+                .map_err(|e| map_client_error(e, ErrCtx::Service))?;
+            Ok(outcome.is_success())
         })
     }
 
@@ -1796,7 +1775,7 @@ impl PyControlObjectClient {
                 .select_with_value(mms)
                 .await
                 .map_err(|e| map_client_error(e, ErrCtx::Service))?;
-            Ok(outcome_to_pair(outcome))
+            Ok(outcome_to_pair(&outcome))
         })
     }
 
@@ -1817,7 +1796,7 @@ impl PyControlObjectClient {
                 .operate(mms)
                 .await
                 .map_err(|e| map_client_error(e, ErrCtx::Service))?;
-            Ok(outcome_to_pair(outcome))
+            Ok(outcome_to_pair(&outcome))
         })
     }
 
@@ -1835,7 +1814,7 @@ impl PyControlObjectClient {
                 .cancel(mms)
                 .await
                 .map_err(|e| map_client_error(e, ErrCtx::Service))?;
-            Ok(outcome_to_pair(outcome))
+            Ok(outcome_to_pair(&outcome))
         })
     }
 }
@@ -1887,7 +1866,7 @@ fn add_cause_token(c: RustControlAddCause) -> &'static str {
         RustControlAddCause::BlockedByMode => "blocked-by-mode",
         RustControlAddCause::BlockedByProcess => "blocked-by-process",
         RustControlAddCause::BlockedByInterlocking => "blocked-by-interlocking",
-        RustControlAddCause::BlockedBySynchroCheck => "blocked-by-synchrocheck",
+        RustControlAddCause::BlockedBySynchrocheck => "blocked-by-synchrocheck",
         RustControlAddCause::CommandAlreadyInExecution => "command-already-in-execution",
         RustControlAddCause::BlockedByHealth => "blocked-by-health",
         RustControlAddCause::OneOfNControl => "one-of-n-control",
@@ -1900,18 +1879,19 @@ fn add_cause_token(c: RustControlAddCause) -> &'static str {
         RustControlAddCause::EndedWithOvershoot => "ended-with-overshoot",
         RustControlAddCause::AbortionDueToDeviation => "abortion-due-to-deviation",
         RustControlAddCause::AbortionByCommunicationLoss => "abortion-by-communication-loss",
-        RustControlAddCause::AbortionByCommand => "abortion-by-command",
+        RustControlAddCause::BlockedByCommand => "abortion-by-command",
         RustControlAddCause::None => "none",
         RustControlAddCause::InconsistentParameters => "inconsistent-parameters",
         RustControlAddCause::LockedByOtherClient => "locked-by-other-client",
+        _ => "unknown",
     }
 }
 
-fn outcome_to_pair(outcome: RustControlOutcome) -> (bool, Option<&'static str>) {
-    match outcome {
-        RustControlOutcome::Success => (true, None),
-        RustControlOutcome::Failure(cause) => (false, Some(add_cause_token(cause))),
-    }
+fn outcome_to_pair(outcome: &RustControlOutcome) -> (bool, Option<&'static str>) {
+    (
+        outcome.is_success(),
+        outcome.add_cause().map(add_cause_token),
+    )
 }
 
 /// Convert a Python value to a generic ``MmsValue`` for ``write_object``.
@@ -2426,6 +2406,7 @@ fn map_scl_error(py: Python<'_>, err: RustSclParseError) -> PyErr {
         iec61850_scl::ErrorKind::DuplicateIdentifier { .. } => "DuplicateIdentifier",
         iec61850_scl::ErrorKind::SemanticConflict { .. } => "SemanticConflict",
         iec61850_scl::ErrorKind::Unsupported { .. } => "Unsupported",
+        _ => "Other",
     };
     let message = err.to_string();
     let py_err = SclError::new_err(message.clone());
@@ -2748,11 +2729,25 @@ fn ied_to_pydict<'py>(py: Python<'py>, ied: &RawIed) -> PyResult<Bound<'py, PyDi
 
 // The four DataTypeTemplates tables: LNodeType, DOType, DAType, EnumType.
 
+/// Sets ``count`` (the number of array elements, 0 for a scalar or a count
+/// not yet known) and ``count_ref`` (the attribute a count names, else
+/// ``None``) from a `count` attribute.
+fn set_count(d: &Bound<'_, PyDict>, count: Option<&RawCount>) -> PyResult<()> {
+    let (n, by_ref) = match count {
+        Some(RawCount::Elements(n)) => (*n, None),
+        Some(RawCount::Attribute(name)) => (0, Some(name.as_str())),
+        _ => (0, None),
+    };
+    d.set_item("count", n)?;
+    set_opt_str(d, "count_ref", by_ref)
+}
+
 fn bda_to_pydict<'py>(py: Python<'py>, bda: &RawBda) -> PyResult<Bound<'py, PyDict>> {
     let d = PyDict::new(py);
     d.set_item("name", bda.name.as_str())?;
     d.set_item("b_type", bda.b_type.as_str())?;
     set_opt_str(&d, "type_ref", bda.type_ref.as_deref())?;
+    set_count(&d, bda.count.as_ref())?;
     set_opt_str(&d, "default_value", bda.default_value.as_deref())?;
     set_opt_str(&d, "val_kind", bda.val_kind.as_deref())?;
     let bdas = PyList::empty(py);
@@ -2770,7 +2765,7 @@ fn da_def_to_pydict<'py>(py: Python<'py>, da: &RawDaDef) -> PyResult<Bound<'py, 
     d.set_item("b_type", da.b_type.as_str())?;
     set_opt_str(&d, "type_ref", da.type_ref.as_deref())?;
     d.set_item("trg_ops", trg_ops_to_pydict(py, &da.trg_ops)?)?;
-    d.set_item("count", da.count)?;
+    set_count(&d, da.count.as_ref())?;
     set_opt_str(&d, "default_value", da.default_value.as_deref())?;
     set_opt_str(&d, "val_kind", da.val_kind.as_deref())?;
     let bdas = PyList::empty(py);
@@ -2785,6 +2780,7 @@ fn sdo_to_pydict<'py>(py: Python<'py>, sdo: &RawSdoDef) -> PyResult<Bound<'py, P
     let d = PyDict::new(py);
     d.set_item("name", sdo.name.as_str())?;
     d.set_item("type", sdo.do_type_ref.as_str())?;
+    set_count(&d, sdo.count.as_ref())?;
     Ok(d)
 }
 
@@ -2813,12 +2809,12 @@ fn do_type_to_pydict<'py>(py: Python<'py>, dot: &RawDoType) -> PyResult<Bound<'p
     let d = PyDict::new(py);
     d.set_item("cdc", dot.cdc.as_str())?;
     let das = PyList::empty(py);
-    for da in &dot.das {
+    for da in dot.das() {
         das.append(da_def_to_pydict(py, da)?)?;
     }
     d.set_item("das", das)?;
     let sdos = PyList::empty(py);
-    for sdo in &dot.sdos {
+    for sdo in dot.sdos() {
         sdos.append(sdo_to_pydict(py, sdo)?)?;
     }
     d.set_item("sdos", sdos)?;
@@ -3141,7 +3137,6 @@ struct PendingTls {
     client_ca_pem: Option<Vec<u8>>,
     allow_only_known_peers: bool,
     known_peer_pems: Vec<Vec<u8>>,
-    chain_validation: bool,
     time_validation: bool,
     crl_pems: Vec<Vec<u8>>,
     session_resumption: bool,
@@ -3225,10 +3220,7 @@ fn map_server_error(err: RustServerError) -> PyErr {
         SE::AlreadyLocked => PyRuntimeError::new_err(msg),
         SE::TypeMismatch { .. } => IedDataAccessError::new_err(msg),
         SE::InvalidCtlModel { .. } => IedDataAccessError::new_err(msg),
-        SE::DomainNameTooLong { .. }
-        | SE::DuplicateDomain { .. }
-        | SE::InvalidModel(_)
-        | SE::Protocol(_) => IedServerError::new_err(msg),
+        _ => IedServerError::new_err(msg),
     }
 }
 
@@ -3899,15 +3891,8 @@ impl RustSettingGroupHandler for PySettingGroupHandler {
         sgcb_bool_callback(self.on_edit_sg.as_ref(), new_edit_sg, conn_id)
     }
 
-    fn confirm_edit_sg(&self, edit_sg: u8, conn_id: RustConnectionId) {
-        if let Some(cb) = self.on_confirm.as_ref() {
-            Python::attach(|py| {
-                let bound = cb.bind(py);
-                if let Err(err) = bound.call1((edit_sg, conn_id)) {
-                    err.write_unraisable(py, Some(bound));
-                }
-            });
-        }
+    fn confirm_edit_sg(&self, edit_sg: u8, conn_id: RustConnectionId) -> bool {
+        sgcb_bool_callback(self.on_confirm.as_ref(), edit_sg, conn_id)
     }
 }
 
@@ -3953,7 +3938,7 @@ fn control_add_cause_from_str(name: &str) -> Option<RustServerControlAddCause> {
         "BlockedByMode" => 8,
         "BlockedByProcess" => 9,
         "BlockedByInterlocking" => 10,
-        "BlockedBySynchroCheck" => 11,
+        "BlockedBySynchrocheck" | "BlockedBySynchroCheck" => 11,
         "CommandAlreadyInExecution" => 12,
         "BlockedByHealth" => 13,
         "OneOfNControl" => 14,
@@ -3966,7 +3951,7 @@ fn control_add_cause_from_str(name: &str) -> Option<RustServerControlAddCause> {
         "EndedWithOvershoot" => 21,
         "AbortionDueToDeviation" => 22,
         "AbortionByCommunicationLoss" => 23,
-        "AbortionByCommand" => 24,
+        "BlockedByCommand" | "AbortionByCommand" => 24,
         "None" => 25,
         "InconsistentParameters" => 26,
         "LockedByOtherClient" => 27,
@@ -3997,7 +3982,9 @@ fn py_err_to_add_cause(py: Python<'_>, err: &PyErr) -> RustServerControlAddCause
 
 /// Build the dict passed to Python control callbacks describing the
 /// `ControlAction`. Keys: ``ctl_num`` / ``test`` / ``synchro_check`` /
-/// ``interlock_check`` / ``is_select`` / ``ctl_time_ms`` / ``origin``.
+/// ``interlock_check`` / ``is_select`` / ``t`` (the eight UTC_TIME octets
+/// of the request) / ``conn_id`` (the association that issued it) /
+/// ``origin``.
 fn control_action_to_pydict<'py>(
     py: Python<'py>,
     action: &RustControlAction,
@@ -4008,7 +3995,8 @@ fn control_action_to_pydict<'py>(
     d.set_item("synchro_check", action.synchro_check())?;
     d.set_item("interlock_check", action.interlock_check())?;
     d.set_item("is_select", action.is_select())?;
-    d.set_item("ctl_time_ms", action.ctl_time_ms())?;
+    d.set_item("t", PyBytes::new(py, &action.t()))?;
+    d.set_item("conn_id", action.conn_id())?;
     let origin = action.origin();
     let origin_dict = PyDict::new(py);
     origin_dict.set_item("or_cat", origin.or_cat)?;
@@ -4755,16 +4743,13 @@ fn build_dataset_from_spec(
             _ => None,
         };
         let component = get_optional_string(e, "component")?;
-        entries.push(RustModelDataSetEntry {
-            ld_inst,
-            ln_name,
-            fc,
-            do_path,
-            array_index,
-            component,
-        });
+        let mut entry = RustModelDataSetEntry::new(ln_name, fc, do_path);
+        entry.ld_inst = ld_inst;
+        entry.array_index = array_index;
+        entry.component = component;
+        entries.push(entry);
     }
-    Ok(RustModelDataSet { name, entries })
+    Ok(RustModelDataSet::new(name, entries))
 }
 
 fn build_rcb_from_spec(
@@ -4801,19 +4786,17 @@ fn build_rcb_from_spec(
         }
         _ => RustModelOptFlds::NONE,
     };
-    let buf_tm_ms = get_optional_u32(rcb, "buf_tm_ms")?.unwrap_or(0);
-    let intg_pd_ms = get_optional_u32(rcb, "intg_pd_ms")?.unwrap_or(0);
-    Ok(RustModelRcb {
-        name,
-        is_buffered,
-        dataset_ref,
-        conf_rev,
-        rpt_id,
-        trg_ops,
-        opt_flds,
-        buf_tm_ms,
-        intg_pd_ms,
-    })
+    let mut out = RustModelRcb::new(name, dataset_ref);
+    out.is_buffered = is_buffered;
+    out.conf_rev = conf_rev;
+    out.rpt_id = rpt_id;
+    out.trg_ops = trg_ops;
+    out.opt_flds = opt_flds;
+    out.buf_tm_ms = get_optional_u32(rcb, "buf_tm_ms")?.unwrap_or(0);
+    out.intg_pd_ms = get_optional_u32(rcb, "intg_pd_ms")?.unwrap_or(0);
+    out.indexed = get_optional_bool(rcb, "indexed")?.unwrap_or(false);
+    out.max_instances = get_optional_u32(rcb, "max_instances")?.unwrap_or(1);
+    Ok(out)
 }
 
 fn build_lcb_from_spec(
@@ -4823,11 +4806,12 @@ fn build_lcb_from_spec(
     lcb_idx: usize,
 ) -> PyResult<RustModelLcb> {
     let ctx = format!("lds[{ld_idx}].lns[{ln_idx}].lcbs[{lcb_idx}]");
-    Ok(RustModelLcb {
-        name: get_required_string(lcb, "name", &ctx)?,
-        dataset_ref: get_required_string(lcb, "dataset_ref", &ctx)?,
-        log_ref: get_optional_string(lcb, "log_ref")?.unwrap_or_default(),
-    })
+    let mut out = RustModelLcb::new(
+        get_required_string(lcb, "name", &ctx)?,
+        get_optional_string(lcb, "log_ref")?.unwrap_or_default(),
+    );
+    out.dataset_ref = get_required_string(lcb, "dataset_ref", &ctx)?;
+    Ok(out)
 }
 
 fn build_sgcb_from_spec(
@@ -4854,12 +4838,12 @@ fn build_sgcb_from_spec(
     let default_resv_tms_s = get_optional_u32(sgcb, "default_resv_tms_s")?
         .map(|n| n.min(u16::MAX as u32) as u16)
         .unwrap_or(60);
-    Ok(RustModelSgcb {
-        num_of_sg,
-        act_sg,
-        has_resv_tms,
-        default_resv_tms_s,
-    })
+    let mut out = RustModelSgcb::default();
+    out.num_of_sg = num_of_sg;
+    out.act_sg = act_sg;
+    out.has_resv_tms = has_resv_tms;
+    out.default_resv_tms_s = default_resv_tms_s;
+    Ok(out)
 }
 
 fn parse_da_type(type_any: &Bound<'_, PyAny>, ctx: &str) -> PyResult<RustDataAttributeType> {
@@ -5403,7 +5387,6 @@ impl PyIedServer {
         client_ca_pem=None,
         allow_only_known_peers=false,
         known_peer_pems=Vec::new(),
-        chain_validation=true,
         time_validation=true,
         crl_pems=Vec::new(),
         session_resumption=true,
@@ -5418,7 +5401,6 @@ impl PyIedServer {
         client_ca_pem: Option<Vec<u8>>,
         allow_only_known_peers: bool,
         known_peer_pems: Vec<Vec<u8>>,
-        chain_validation: bool,
         time_validation: bool,
         crl_pems: Vec<Vec<u8>>,
         session_resumption: bool,
@@ -5443,7 +5425,6 @@ impl PyIedServer {
             client_ca_pem,
             allow_only_known_peers,
             known_peer_pems,
-            chain_validation,
             time_validation,
             crl_pems,
             session_resumption,
@@ -5720,11 +5701,17 @@ impl PyIedServer {
     /// falls back to ``"Unknown"``.
     ///
     /// `action_dict` keys: ``ctl_num``, ``test``, ``synchro_check``,
-    /// ``interlock_check``, ``is_select``, ``ctl_time_ms``, ``origin``
-    /// (a sub-dict with ``or_cat`` and ``or_ident``).
+    /// ``interlock_check``, ``is_select``, ``t`` (the eight UTC_TIME octets
+    /// of the request), ``conn_id`` (the association that issued it),
+    /// ``origin`` (a sub-dict with ``or_cat`` and ``or_ident``).
+    ///
+    /// `ctl_model`, `sbo_timeout_ms`, `sbo_class` and `oper_timeout_ms` (the
+    /// time limit of an executing command, 0 for none) apply where the model
+    /// declares no `ctlModel`, `sboTimeout`, `sboClass` or `operTimeout`
+    /// attribute; a declared attribute takes precedence.
     #[pyo3(signature = (
         path, *, ctl_model, check=None, operate=None, wait=None,
-        sbo_timeout_ms=30_000, sbo_class="operate-once",
+        sbo_timeout_ms=30_000, sbo_class="operate-once", oper_timeout_ms=0,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn on_control(
@@ -5737,6 +5724,7 @@ impl PyIedServer {
         wait: Option<Py<PyAny>>,
         sbo_timeout_ms: u32,
         sbo_class: &str,
+        oper_timeout_ms: u32,
     ) -> PyResult<()> {
         for (name, cb) in [("check", &check), ("operate", &operate), ("wait", &wait)] {
             if let Some(c) = cb {
@@ -5755,14 +5743,10 @@ impl PyIedServer {
         let model = control_model_from_str(ctl_model)?;
         let sbo = sbo_class_from_str(sbo_class)?;
         let (domain, ln_name, do_name) = self.resolve_control_path("on_control", path)?;
-        let config = RustControlObjectConfig {
-            name: do_name,
-            ln_name,
-            domain,
-            ctl_model: model,
-            sbo_timeout_ms,
-            sbo_class: sbo,
-        };
+        let mut config = RustControlObjectConfig::new(do_name, ln_name, domain, model);
+        config.sbo_timeout_ms = sbo_timeout_ms;
+        config.sbo_class = sbo;
+        config.oper_timeout_ms = oper_timeout_ms;
         let pending = PendingControl {
             user_path: path.to_string(),
             config,
@@ -6232,6 +6216,12 @@ impl PyIedServer {
     /// Returns the assigned 8-byte entry id as a Python `int`, or `None` if
     /// the LCB is disabled (`LogEna = NotEnabled`) and the trigger was
     /// silently skipped. Requires the server to be running.
+    ///
+    /// The server already logs every member of the LCB's data set on its
+    /// own (data change, quality change, data update and integrity, as the
+    /// block's TrgOps select); an entry written here for such a member is
+    /// recorded in addition to the automatic one. Use it for values outside
+    /// the data set.
     #[pyo3(signature = (path, *, data_ref, value, time_ms=None, reason_code=0x02))]
     fn log_value(
         &self,
@@ -6271,8 +6261,20 @@ impl PyIedServer {
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0)
         });
-        lc.log_single_value(ts, data_ref, mms_value, reason_code)
-            .map(|opt_id| opt_id.map(|id| id.0))
+        if !lc.is_enabled() {
+            return Ok(None);
+        }
+        let Some(storage) = lc.storage.as_ref() else {
+            return Ok(None);
+        };
+        let data = [iec61850_server::logging::JournalEntryData::new(
+            data_ref,
+            mms_value,
+            reason_code,
+        )];
+        storage
+            .add_entry_with_data(ts, &data)
+            .map(|id| Some(id.0))
             .map_err(|e| PyRuntimeError::new_err(format!("log_value: {e}")))
     }
 

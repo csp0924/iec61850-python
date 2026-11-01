@@ -104,9 +104,8 @@ async def test_component_without_array_index_rejected_locally(
 
 
 async def test_array_index_member_rejected_by_server(demo_server: str) -> None:
-    """The facade composes an alternate-access reference, but the underlying
-    MMS DefineNamedVariableList path does not accept array-indexed members;
-    the rejection surfaces as ``ValueError`` from the lower layer.
+    """An element of an attribute that is not an array names no object, so
+    the server refuses the data set with definition / object-undefined.
     """
     conn = await iec61850.IedConnection.connect(demo_server)
     try:
@@ -117,7 +116,7 @@ async def test_array_index_member_rejected_by_server(demo_server: str) -> None:
                 array_index=0,
             ),
         ]
-        with pytest.raises(ValueError):
+        with pytest.raises(iec61850.IedServiceError):
             await conn.create_data_set(f"{_demo.DOMAIN}/LLN0.ds_arr", members)
     finally:
         await conn.disconnect()

@@ -434,8 +434,9 @@ class TlsConfig:
     PEM-encoded bytes are accepted directly so callers can load from any source
     (file, KMS, secrets manager) without this package taking a filesystem dep.
 
-    Defaults match the strict IEC 62351-3 profile: TLS 1.2-1.3, full chain +
-    time validation, SNI verification on, no allow-list. Override the
+    Defaults match the strict IEC 62351-3 profile: TLS 1.2-1.3, time
+    validation, SNI verification on, no allow-list. The certificate chain is
+    always validated against ``ca_pem``. Override the
     ``allow_only_known_peers`` / ``known_peer_pems`` pair to pin specific
     server certificates (IEC 62351-3 known-peer mode).
     """
@@ -446,7 +447,6 @@ class TlsConfig:
     verify_hostname: bool = True
     allow_only_known_peers: bool = False
     known_peer_pems: tuple[bytes, ...] = ()
-    chain_validation: bool = True
     time_validation: bool = True
     crl_pems: tuple[bytes, ...] = ()
     min_version: TlsVersion = TlsVersion.TLS_1_2
