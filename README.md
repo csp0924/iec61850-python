@@ -117,7 +117,7 @@ The Rust side is not vendored. `Cargo.toml` takes each crate from the
 implementation repository at a release tag:
 
 ```toml
-iec61850-client = { git = "https://github.com/csp0924/iec61850-rust", tag = "v0.3.2", features = ["tls"] }
+iec61850-client = { git = "https://github.com/csp0924/iec61850-rust", tag = "v0.4.0", features = ["tls"] }
 ```
 
 Once that tag exists, a build is just:
@@ -160,7 +160,7 @@ config alone is not enough — resolution fails with:
 
 ```
 failed to load source for dependency `iec61850-client`
-  Unable to update https://github.com/csp0924/iec61850-rust?tag=v0.3.2
+  Unable to update https://github.com/csp0924/iec61850-rust?tag=v0.4.0
 ```
 
 Seed a lock file once and the patch takes over. Cargo's git backend needs an
@@ -173,14 +173,14 @@ repository root, with the sibling checkout in place:
 RUST_REPO=$(cd ../iec61850-rust && { pwd -W 2>/dev/null || pwd; })
 
 # 1. Point the manifest at that checkout, just long enough to resolve.
-sed -i "s|https://github.com/csp0924/iec61850-rust\", tag = \"v0.3.2|file://${RUST_REPO}\", branch = \"main|g" Cargo.toml
+sed -i "s|https://github.com/csp0924/iec61850-rust\", tag = \"v0.4.0|file://${RUST_REPO}\", branch = \"main|g" Cargo.toml
 cargo generate-lockfile
 
 # 2. Restore the manifest and relabel the source lines the lock recorded.
 #    Cargo canonicalises the URL it stores, so match on the branch suffix
 #    rather than on the exact spelling passed in above.
 git checkout Cargo.toml
-sed -i -E "s|git\+file://[^\"]*\?branch=main|git+https://github.com/csp0924/iec61850-rust?tag=v0.3.2|g" Cargo.lock
+sed -i -E "s|git\+file://[^\"]*\?branch=main|git+https://github.com/csp0924/iec61850-rust?tag=v0.4.0|g" Cargo.lock
 ```
 
 `Cargo.lock` is git-ignored for the same reason: it pins a revision the
@@ -190,7 +190,7 @@ offline and reports the patched packages coming from
 against your working tree — edits on the Rust side are picked up without a
 commit.
 
-Once `v0.3.2` is tagged, delete `.cargo/config.toml` and `Cargo.lock` and build
+Once `v0.4.0` is tagged, delete `.cargo/config.toml` and `Cargo.lock` and build
 normally; none of this is needed any more.
 
 ## Conformance (PICS)
