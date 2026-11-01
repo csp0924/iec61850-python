@@ -320,6 +320,33 @@ class JournalEntry:
 
 
 @dataclass(frozen=True, slots=True)
+class ServerIdentity:
+    """Identity a server reports through the MMS Identify service.
+
+    ``vendor``, ``model`` and ``revision`` are the ``vendorName``,
+    ``modelName`` and ``revision`` of the responding implementation.
+    ``abstract_syntaxes`` lists the abstract syntaxes the server names, each
+    a dotted OBJECT IDENTIFIER; it is empty when the server leaves
+    ``listOfAbstractSyntaxes`` out.
+    """
+
+    vendor: str
+    model: str
+    revision: str
+    abstract_syntaxes: tuple[str, ...] = ()
+
+    @classmethod
+    def from_native(cls, raw: Mapping[str, Any]) -> "ServerIdentity":
+        """Build from the dict ``_native.IedConnection.get_server_identity`` returns."""
+        return cls(
+            vendor=raw["vendor"],
+            model=raw["model"],
+            revision=raw["revision"],
+            abstract_syntaxes=tuple(raw["abstract_syntaxes"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class DataSetMember:
     """Member spec for ``create_data_set()``."""
 

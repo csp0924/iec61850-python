@@ -316,6 +316,10 @@ class IedConnection:
         self, log_ref: str, starting_time_ms: int, entry_id: bytes
     ) -> Awaitable[dict[str, Any]]: ...
 
+    # Server identification
+    # `{"vendor", "model", "revision", "abstract_syntaxes": [dotted OID, ...]}`.
+    def get_server_identity(self) -> Awaitable[dict[str, Any]]: ...
+
     # Control
     def create_control_object(
         self, object_ref: str, ctl_model: str

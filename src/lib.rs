@@ -1881,6 +1881,39 @@ impl PyIedConnection {
         })
     }
 
+    /// Read the vendor, model and revision of the server (MMS Identify).
+    ///
+    /// Resolves to `{"vendor": str, "model": str, "revision": str,
+    /// "abstract_syntaxes": [str, ...]}`, each abstract syntax a dotted
+    /// OBJECT IDENTIFIER; the list is empty when the server sends none.
+    fn get_server_identity<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let conn = Arc::clone(&self.inner);
+        future_into_py(py, async move {
+            let identity = conn
+                .get_server_identity()
+                .await
+                .map_err(|e| map_client_error(e, ErrCtx::Service))?;
+            Python::attach(|py| -> PyResult<Py<PyAny>> {
+                let d = PyDict::new(py);
+                d.set_item("vendor", &identity.vendor)?;
+                d.set_item("model", &identity.model)?;
+                d.set_item("revision", &identity.revision)?;
+                let syntaxes: Vec<String> = identity
+                    .abstract_syntaxes
+                    .iter()
+                    .map(|arcs| {
+                        arcs.iter()
+                            .map(u32::to_string)
+                            .collect::<Vec<_>>()
+                            .join(".")
+                    })
+                    .collect();
+                d.set_item("abstract_syntaxes", syntaxes)?;
+                Ok(d.into_any().unbind())
+            })
+        })
+    }
+
     /// Create a control handle for a single controllable DO.
     ///
     /// `object_ref` is `"<LD>/<LN>.<DO>"`. `ctl_model` is one of

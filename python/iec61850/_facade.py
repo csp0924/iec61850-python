@@ -21,6 +21,7 @@ from ._dataclasses import (
     Quality,
     QualityDetail,
     ReportOptFlds,
+    ServerIdentity,
     TlsConfig,
     TriggerOptions,
     TypeSpec,
@@ -686,6 +687,17 @@ class IedConnection:
         server; subsequent calls re-use the cache.
         """
         return await self._native_conn.get_device_model(refresh)
+
+    # ─── server identification ────────────────────────────────────────────
+    async def get_server_identity(self) -> ServerIdentity:
+        """Read the vendor, model and revision of the server (MMS Identify).
+
+        IEC 61850-8-1 lists Identify among the MMS services an implementation
+        carries. A server without the service answers with an error or a
+        reject, raised as ``IedServiceError``.
+        """
+        raw = await self._native_conn.get_server_identity()
+        return ServerIdentity.from_native(raw)
 
     # ─── reporting ────────────────────────────────────────────────────────
     async def install_report_handler(
