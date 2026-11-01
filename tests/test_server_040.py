@@ -15,6 +15,7 @@ from iec61850 import (
     ControlModel,
     DataSetMember,
     IedConnection,
+    IedConnectionError,
     IedDataAccessError,
     IedError,
     IedServer,
@@ -761,8 +762,13 @@ async def test_abort_all_connections_closes_every_association() -> None:
         assert server.connection_count == 2
         assert server.abort_all_connections() == 2
         assert await _until(lambda: server.connection_count == 0)
-        with pytest.raises(IedError):
+        with pytest.raises(IedConnectionError) as lost:
             await first.read_bool(_demo.IND1, FC.ST)
+        assert lost.value.reason == "connection-lost"
+        assert first.is_connected is False
+        with pytest.raises(IedConnectionError, match="not connected") as after:
+            await first.read_bool(_demo.IND1, FC.ST)
+        assert after.value.reason is None
         # The server keeps accepting new associations.
         third = await IedConnection.connect(server.bound_addr)
         try:

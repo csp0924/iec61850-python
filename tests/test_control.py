@@ -8,6 +8,8 @@ IEC 61850-7-2 Table 67.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 import _demo
@@ -219,6 +221,59 @@ async def test_sbo_normal_second_select_is_refused() -> None:
             assert again.add_cause is not None
         finally:
             await conn.disconnect()
+
+
+async def _operate_under_oper_timeout(
+    oper_timeout_ms: int, *, hold: bool
+) -> iec61850.ControlOutcome:
+    """Operate `GGIO1.SPCSO1` under direct-enhanced with an operate time limit.
+
+    With `hold` the operate callback waits on an event that is set only once
+    the client has its outcome, so the server's time limit is what ends the
+    command; otherwise the callback returns at once.
+    """
+    release = asyncio.Event()
+
+    def configure(server: iec61850.IedServer) -> None:
+        async def operate(_path: str, value: object, _action: dict) -> None:
+            if hold:
+                await release.wait()
+            server.update_bool(f"{_demo.SRV_SWITCH}.stVal", bool(value))
+
+        server.on_control(
+            _demo.SRV_SWITCH,
+            ctl_model="direct-enhanced",
+            operate=operate,
+            oper_timeout_ms=oper_timeout_ms,
+        )
+
+    async with _demo.hosted_demo(
+        control_blocks=False, configure=configure, ctl_model="direct-enhanced"
+    ) as server:
+        conn = await iec61850.IedConnection.connect(server.bound_addr)
+        try:
+            spc = conn.create_control_object(
+                _demo.SWITCH, iec61850.ControlModel.DIRECT_ENHANCED
+            )
+            return await spc.operate(True)
+        finally:
+            release.set()
+            await asyncio.sleep(0)
+            await conn.disconnect()
+
+
+async def test_operate_past_the_oper_timeout_ends_with_time_limit_over() -> None:
+    outcome = await _operate_under_oper_timeout(200, hold=True)
+    assert outcome.success is False
+    assert outcome.add_cause is iec61850.ControlAddCause.TIME_LIMIT_OVER
+    assert outcome.last_appl_error is not None
+    assert outcome.last_appl_error.add_cause is iec61850.ControlAddCause.TIME_LIMIT_OVER
+
+
+async def test_operate_within_the_oper_timeout_succeeds() -> None:
+    outcome = await _operate_under_oper_timeout(5000, hold=False)
+    assert outcome.success is True
+    assert outcome.add_cause is None
 
 
 def test_blocked_by_command_keeps_its_former_name() -> None:

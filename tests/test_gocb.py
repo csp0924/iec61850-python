@@ -16,6 +16,8 @@ from iec61850 import IedConnection, IedServer
 
 GOCB_IEC = f"{_demo.DOMAIN}/LLN0.gcbStatus"
 GOCB_MMS = f"{_demo.DOMAIN}/LLN0$GO$gcbStatus"
+DS_STATUS_REF = f"{_demo.DOMAIN}/{_demo.DS_STATUS}"
+DS_MEAS_REF = f"{_demo.DOMAIN}/{_demo.DS_MEAS}"
 
 
 
@@ -78,6 +80,49 @@ async def test_set_gocb_values_refuses_go_id_while_enabled() -> None:
     assert excinfo.value.code == 2
     assert values.go_ena is True
     assert values.go_id == "DemoIED/LLN0$GO$gcbStatus"
+
+async def test_set_gocb_values_changes_the_data_set_while_disabled() -> None:
+    async with _gocb_server() as server:
+        conn = await IedConnection.connect(server.bound_addr)
+        try:
+            await conn.set_gocb_values(GOCB_IEC, dat_set=DS_MEAS_REF)
+            values = await conn.get_gocb_values(GOCB_IEC)
+        finally:
+            await conn.disconnect()
+    assert values.dat_set == DS_MEAS_REF
+    assert values.go_ena is False
+
+
+async def test_set_gocb_values_refuses_dat_set_while_enabled() -> None:
+    async with _gocb_server() as server:
+        conn = await IedConnection.connect(server.bound_addr)
+        try:
+            await conn.set_gocb_values(GOCB_IEC, go_ena=True)
+            with pytest.raises(iec61850.IedDataAccessError) as excinfo:
+                await conn.set_gocb_values(GOCB_IEC, dat_set=DS_MEAS_REF)
+            values = await conn.get_gocb_values(GOCB_IEC)
+        finally:
+            await conn.disconnect()
+    assert excinfo.value.code == 2
+    assert values.dat_set == DS_STATUS_REF
+
+
+async def test_set_gocb_values_refuses_dat_set_under_ed2_1() -> None:
+    server = IedServer.from_scl(_demo.DEMO_CID, ied_name=_demo.IED_NAME)
+    server.set_edition("ed2.1")
+    server.bind("127.0.0.1:0")
+    server.register_from_model()
+    async with server:
+        conn = await IedConnection.connect(server.bound_addr)
+        try:
+            with pytest.raises(iec61850.IedDataAccessError) as excinfo:
+                await conn.set_gocb_values(GOCB_IEC, dat_set=DS_MEAS_REF)
+            values = await conn.get_gocb_values(GOCB_IEC)
+        finally:
+            await conn.disconnect()
+    assert excinfo.value.code is not None
+    assert values.dat_set == DS_STATUS_REF
+
 
 @pytest.mark.parametrize("reference", [GOCB_IEC, GOCB_MMS])
 async def test_get_gocb_values_of_unregistered_block_raises(
