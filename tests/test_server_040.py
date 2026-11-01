@@ -3,15 +3,20 @@ drives it from the in-package client over TCP."""
 
 from __future__ import annotations
 
+import asyncio
+import queue
+
 import pytest
 
 import _demo
 from iec61850 import (
+    FC,
     ControlModel,
     IedConnection,
     IedDataAccessError,
     IedServer,
     IedServerError,
+    RcbWriteMask,
 )
 
 URCB_MEAS = f"{_demo.DOMAIN}/LLN0$RP$urcbMeas"
@@ -187,3 +192,149 @@ async def test_register_from_model_after_stop_raises() -> None:
         pass
     with pytest.raises(RuntimeError, match="stopped"):
         server.register_from_model()
+
+
+# ── update_array ────────────────────────────────────────────────────────────
+
+ARRAY_SCL = """<?xml version="1.0" encoding="UTF-8"?>
+<SCL xmlns="http://www.iec.ch/61850/2003/SCL">
+  <IED name="IED1" manufacturer="ACME">
+    <AccessPoint name="AP1">
+      <Server>
+        <LDevice inst="GenericIO">
+          <LN0 lnClass="LLN0" inst="" lnType="LLN0_0">
+            <DataSet name="dsArr">
+              <FCDA ldInst="GenericIO" prefix="" lnClass="GGIO" lnInst="1"
+                    doName="Arr" daName="vals" fc="MX"/>
+            </DataSet>
+            <ReportControl name="urcbArr" rptID="arr" datSet="dsArr"
+                           buffered="false" indexed="false" bufTime="0"
+                           intgPd="0" confRev="1">
+              <TrgOps dchg="true"/>
+              <OptFields seqNum="true" dataSet="true" reasonCode="true"/>
+              <RptEnabled max="1"/>
+            </ReportControl>
+          </LN0>
+          <LN prefix="" lnClass="GGIO" inst="1" lnType="GGIO_1"/>
+        </LDevice>
+      </Server>
+    </AccessPoint>
+  </IED>
+  <DataTypeTemplates>
+    <LNodeType id="LLN0_0" lnClass="LLN0">
+      <DO name="Mod" type="ENC_1"/>
+    </LNodeType>
+    <LNodeType id="GGIO_1" lnClass="GGIO">
+      <DO name="Ind1" type="SPS_1"/>
+      <DO name="Arr" type="ARR_1"/>
+    </LNodeType>
+    <DOType id="ENC_1" cdc="ENC">
+      <DA name="stVal" fc="ST" bType="Enum" type="BehaviourKind"/>
+    </DOType>
+    <DOType id="SPS_1" cdc="SPS">
+      <DA name="stVal" fc="ST" bType="BOOLEAN" dchg="true"/>
+    </DOType>
+    <DOType id="ARR_1" cdc="MV">
+      <DA name="vals" fc="MX" bType="INT32" count="3" dchg="true"/>
+      <DA name="mags" fc="MX" bType="Struct" type="AnalogueValue" count="2" dchg="true"/>
+      <DA name="flags" fc="MX" bType="BOOLEAN" count="2"/>
+    </DOType>
+    <DAType id="AnalogueValue">
+      <BDA name="f" bType="FLOAT32"/>
+    </DAType>
+    <EnumType id="BehaviourKind">
+      <EnumVal ord="1">on</EnumVal>
+    </EnumType>
+  </DataTypeTemplates>
+</SCL>
+"""
+
+ARR_VALS = "GenericIO/GGIO1.Arr.vals"
+ARR_MAGS = "GenericIO/GGIO1.Arr.mags"
+ARR_FLAGS = "GenericIO/GGIO1.Arr.flags"
+URCB_ARR = "IED1GenericIO/LLN0$RP$urcbArr"
+
+
+def _array_server() -> IedServer:
+    server = IedServer.from_scl_str(ARRAY_SCL, ied_name="IED1")
+    server.bind("127.0.0.1:0")
+    return server
+
+
+async def _next_report(conn: IedConnection, sink: queue.Queue, timeout_s: float):
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+    while loop.time() < deadline:
+        await conn.poll_reports(100)
+        try:
+            return sink.get_nowait()
+        except queue.Empty:
+            continue
+    return None
+
+
+async def test_update_array_writes_every_element() -> None:
+    server = _array_server()
+    async with server:
+        server.update_array(ARR_VALS, [1, -2, 3])
+        server.update_array(ARR_MAGS, [[1.5], {"f": 2.5}])
+        server.update_array(ARR_FLAGS, (True, {"type": "bool", "value": False}))
+        conn = await IedConnection.connect(server.bound_addr)
+        try:
+            assert await conn.read("IED1GenericIO/GGIO1.Arr.vals", FC.MX) == [1, -2, 3]
+            assert await conn.read("IED1GenericIO/GGIO1.Arr.mags", FC.MX) == [[1.5], [2.5]]
+            assert await conn.read("IED1GenericIO/GGIO1.Arr.flags", FC.MX) == [True, False]
+        finally:
+            await conn.disconnect()
+
+
+async def test_update_array_sends_one_report_for_the_whole_array() -> None:
+    server = _array_server()
+    server.register_from_model()
+    async with server:
+        conn = await IedConnection.connect(server.bound_addr)
+        try:
+            rcb = await conn.get_rcb_values(URCB_ARR)
+            rcb.resv = True
+            rcb.rpt_ena = True
+            await conn.set_rcb_values(rcb, RcbWriteMask.fields("resv", "rpt_ena"))
+            sink: queue.Queue = queue.Queue()
+            await conn.install_report_handler(URCB_ARR, sink.put, rpt_id="arr")
+
+            server.update_array(ARR_VALS, [4, 5, 6])
+
+            report = await _next_report(conn, sink, 4.0)
+            assert report is not None, "no report after update_array"
+            assert [e.value for e in report.entries] == [[4, 5, 6]]
+            assert await _next_report(conn, sink, 0.5) is None
+        finally:
+            await conn.disconnect()
+
+
+async def test_update_array_refuses_a_value_that_does_not_fit() -> None:
+    server = _array_server()
+    async with server:
+        server.update_array(ARR_VALS, [7, 8, 9])
+        with pytest.raises(ValueError, match="must hold 3 elements, got 2"):
+            server.update_array(ARR_VALS, [1, 2])
+        with pytest.raises(ValueError, match=r"values\[1\] must be an i64"):
+            server.update_array(ARR_VALS, [1, "x", 3])
+        with pytest.raises(ValueError, match=r"values\[0\] must be a bool"):
+            server.update_array(ARR_FLAGS, [1, True])
+        with pytest.raises(ValueError, match="missing the member 'f'"):
+            server.update_array(ARR_MAGS, [{"g": 1.0}, {"f": 2.0}])
+        with pytest.raises(ValueError, match="is not an array attribute"):
+            server.update_array("GenericIO/GGIO1.Ind1.stVal", [True])
+        with pytest.raises(KeyError):
+            server.update_array("GenericIO/GGIO1.Nope.vals", [1])
+        conn = await IedConnection.connect(server.bound_addr)
+        try:
+            assert await conn.read("IED1GenericIO/GGIO1.Arr.vals", FC.MX) == [7, 8, 9]
+        finally:
+            await conn.disconnect()
+
+
+def test_update_array_before_start_raises() -> None:
+    server = _array_server()
+    with pytest.raises(RuntimeError, match="not running"):
+        server.update_array(ARR_VALS, [1, 2, 3])

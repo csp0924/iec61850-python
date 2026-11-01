@@ -97,7 +97,7 @@ use iec61850_sntp::{SntpClient as RustSntpClient, SntpError as RustSntpError};
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyKeyError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict, PyList, PyString, PyType};
+use pyo3::types::{PyBytes, PyDict, PyList, PyString, PyTuple, PyType};
 use pyo3_async_runtimes::tokio::future_into_py;
 use pyo3_async_runtimes::TaskLocals;
 use tokio::sync::Mutex as AsyncMutex;
@@ -2191,6 +2191,161 @@ fn py_value_to_mms_value_generic(value: &Bound<'_, PyAny>, what: &str) -> PyResu
     Err(PyValueError::new_err(format!(
         "{what} must be bool / int / float / str / bytes / list, or a tagged dict"
     )))
+}
+
+/// Convert a Python value to an ``MmsValue`` shaped like the attribute `da`.
+///
+/// An array takes a ``list`` or ``tuple`` of one item per element; a
+/// constructed attribute takes a ``list`` or ``tuple`` of one item per
+/// sub-attribute in model order, or a ``dict`` keyed by sub-attribute name;
+/// a leaf takes a tagged ``dict`` as ``from_model_spec`` reads it, or a plain
+/// value of the variant it holds: ``bool``, ``int`` (signed or unsigned),
+/// ``float`` (an ``int`` is accepted), ``str``, ``bytes`` (OCTET STRING,
+/// UTC TIME, BINARY TIME), or a ``(data, padding)`` tuple for a BIT STRING.
+/// `what` names the value at the start of every error message.
+fn py_value_to_mms_value_shaped(
+    value: &Bound<'_, PyAny>,
+    da: &RustDataAttribute,
+    what: &str,
+) -> PyResult<RustMmsValue> {
+    let items = |kind: &str| -> PyResult<Vec<Bound<'_, PyAny>>> {
+        let seq: Vec<Bound<'_, PyAny>> = if let Ok(list) = value.cast::<PyList>() {
+            list.iter().collect()
+        } else if let Ok(tuple) = value.cast::<PyTuple>() {
+            tuple.iter().collect()
+        } else {
+            return Err(PyValueError::new_err(format!(
+                "{what} must be a list of {} {kind}",
+                da.children.len()
+            )));
+        };
+        if seq.len() != da.children.len() {
+            return Err(PyValueError::new_err(format!(
+                "{what} must hold {} {kind}, got {}",
+                da.children.len(),
+                seq.len()
+            )));
+        }
+        Ok(seq)
+    };
+    if da.is_array() {
+        let mut out = Vec::with_capacity(da.children.len());
+        for (i, (item, child)) in items("elements")?.iter().zip(&da.children).enumerate() {
+            out.push(py_value_to_mms_value_shaped(
+                item,
+                child,
+                &format!("{what}[{i}]"),
+            )?);
+        }
+        return Ok(RustMmsValue::Array(out));
+    }
+    if da.ty == RustDataAttributeType::Constructed {
+        let mut out = Vec::with_capacity(da.children.len());
+        if let Ok(d) = value.cast::<PyDict>() {
+            if d.len() != da.children.len() {
+                return Err(PyValueError::new_err(format!(
+                    "{what} must name the {} members {:?}",
+                    da.children.len(),
+                    da.children
+                        .iter()
+                        .map(|c| c.name.as_str())
+                        .collect::<Vec<_>>()
+                )));
+            }
+            for child in &da.children {
+                let member = d.get_item(&child.name)?.ok_or_else(|| {
+                    PyValueError::new_err(format!("{what} is missing the member '{}'", child.name))
+                })?;
+                out.push(py_value_to_mms_value_shaped(
+                    &member,
+                    child,
+                    &format!("{what}['{}']", child.name),
+                )?);
+            }
+        } else {
+            for (item, child) in items("members")?.iter().zip(&da.children) {
+                out.push(py_value_to_mms_value_shaped(
+                    item,
+                    child,
+                    &format!("{what}.{}", child.name),
+                )?);
+            }
+        }
+        return Ok(RustMmsValue::Structure(out));
+    }
+    if let Ok(d) = value.cast::<PyDict>() {
+        return tagged_value_to_mms_value(d, Some(da.ty), what);
+    }
+    let invalid = |expected: &str| PyValueError::new_err(format!("{what} must be {expected}"));
+    Ok(match da.snapshot() {
+        RustMmsValue::Boolean(_) => {
+            if !value.is_instance_of::<pyo3::types::PyBool>() {
+                return Err(invalid("a bool"));
+            }
+            RustMmsValue::Boolean(value.extract()?)
+        }
+        RustMmsValue::Integer(_) => {
+            if value.is_instance_of::<pyo3::types::PyBool>() {
+                return Err(invalid("an int"));
+            }
+            RustMmsValue::Integer(value.extract().map_err(|_| invalid("an i64"))?)
+        }
+        RustMmsValue::Unsigned(_) => {
+            if value.is_instance_of::<pyo3::types::PyBool>() {
+                return Err(invalid("an int"));
+            }
+            RustMmsValue::Unsigned(value.extract().map_err(|_| invalid("a u64"))?)
+        }
+        RustMmsValue::Float32(_) => {
+            RustMmsValue::Float32(value.extract().map_err(|_| invalid("a float"))?)
+        }
+        RustMmsValue::Float64(_) => {
+            RustMmsValue::Float64(value.extract().map_err(|_| invalid("a float"))?)
+        }
+        RustMmsValue::VisibleString(_) => {
+            RustMmsValue::VisibleString(value.extract().map_err(|_| invalid("a str"))?)
+        }
+        RustMmsValue::MmsString(_) => {
+            RustMmsValue::MmsString(value.extract().map_err(|_| invalid("a str"))?)
+        }
+        RustMmsValue::OctetString(_) => RustMmsValue::OctetString(
+            value
+                .cast::<PyBytes>()
+                .map_err(|_| invalid("bytes"))?
+                .as_bytes()
+                .to_vec(),
+        ),
+        RustMmsValue::UtcTime(_) => {
+            let bytes = value.cast::<PyBytes>().map_err(|_| invalid("8 bytes"))?;
+            RustMmsValue::UtcTime(
+                bytes
+                    .as_bytes()
+                    .try_into()
+                    .map_err(|_| invalid("8 bytes"))?,
+            )
+        }
+        RustMmsValue::BinaryTime(_) => RustMmsValue::BinaryTime(
+            value
+                .cast::<PyBytes>()
+                .map_err(|_| invalid("4 or 6 bytes"))?
+                .as_bytes()
+                .to_vec(),
+        ),
+        RustMmsValue::BitString { .. } => {
+            let (data, padding): (Vec<u8>, Bound<'_, PyAny>) = value
+                .extract()
+                .map_err(|_| invalid("a (data, padding) tuple"))?;
+            let padding = extract_bit_string_padding(what, &padding, data.len())?;
+            let mut data = data;
+            if let Some(last) = data.last_mut() {
+                *last &= 0xFF << padding;
+            }
+            RustMmsValue::BitString { padding, data }
+        }
+        RustMmsValue::Array(_) | RustMmsValue::Structure(_) => {
+            return Err(invalid("a list"));
+        }
+    })
 }
 
 /// Convert a Python scalar to the closest ``MmsValue`` for control payloads.
@@ -6864,6 +7019,40 @@ impl PyIedServer {
         self.with_da("update_bit_string", path, |s, da| {
             s.update_bit_string(da, &data, padding)
         })
+    }
+
+    /// Update every element of an array data attribute in one step.
+    ///
+    /// `values` holds one item per element, in index order. An element of a
+    /// constructed type is a ``list`` of its sub-attribute values in model
+    /// order or a ``dict`` keyed by sub-attribute name; a leaf element is a
+    /// plain value of the type the attribute holds (``bool``, ``int``,
+    /// ``float``, ``str``, ``bytes``, or ``(data, padding)`` for a bit
+    /// string) or a tagged ``dict`` as ``from_model_spec`` takes it.
+    ///
+    /// The whole shape is checked before any element changes, and a client
+    /// read sees the update whole or not at all. Each changed leaf raises the
+    /// triggers its trigger options declare, and they go out as one batch: a
+    /// report control block without a buffer time sends a single report
+    /// holding every member the update changed.
+    ///
+    /// A path that is not an array, a wrong element count, or an item that
+    /// does not fit its element raises `ValueError` or `IedDataAccessError`
+    /// and leaves the attribute unchanged.
+    fn update_array(&self, path: &str, values: Bound<'_, PyAny>) -> PyResult<()> {
+        let ptr =
+            self.path_index.get(path).copied().ok_or_else(|| {
+                PyKeyError::new_err(format!("update_array: path '{path}' not found"))
+            })?;
+        // SAFETY: see `DaPtr` invariant — `self.model` pins the tree alive.
+        let da: &RustDataAttribute = unsafe { &*ptr.0 };
+        if !da.is_array() {
+            return Err(PyValueError::new_err(format!(
+                "update_array: '{path}' is not an array attribute"
+            )));
+        }
+        let value = py_value_to_mms_value_shaped(&values, da, "update_array: values")?;
+        self.with_da("update_array", path, |s, da| s.update_array(da, value))
     }
 
     /// Update a ``BIT_STRING`` data attribute of 1 to 32 bits from an int.
