@@ -1887,6 +1887,10 @@ Tracks iec61850-rust v0.4.0.
 - `IedConnection.read_timestamp_with_quality(ref, fc)` returns the time and
   its `TimeQuality` (`leap_second_known`, `clock_failure`,
   `clock_not_synchronized`, `time_accuracy`).
+- `IedServer.with_tls` takes `require_client_auth`: with a `client_ca_pem`,
+  `True` refuses a client that presents no certificate (by default such a
+  client is admitted); without a `client_ca_pem`, `start()` raises
+  `ValueError`.
 
 #### Changed behavior (from iec61850-rust 0.4.0)
 

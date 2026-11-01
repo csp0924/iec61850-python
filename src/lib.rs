@@ -780,6 +780,7 @@ fn build_tls_acceptor(pt: &PendingTls) -> PyResult<iec61850_tls::TlsAcceptor> {
     }
     builder = builder
         .allow_only_known_peers(pt.allow_only_known_peers)
+        .require_client_auth(pt.require_client_auth)
         .time_validation(pt.time_validation)
         .session_resumption(pt.session_resumption)
         .min_version(pt.min_version)
@@ -3950,6 +3951,7 @@ struct PendingTls {
     client_ca_pem: Option<Vec<u8>>,
     allow_only_known_peers: bool,
     known_peer_pems: Vec<Vec<u8>>,
+    require_client_auth: bool,
     time_validation: bool,
     crl_pems: Vec<Vec<u8>>,
     session_resumption: bool,
@@ -6336,15 +6338,22 @@ impl PyIedServer {
     /// `server_cert_pem` is the leaf-first PEM chain; `server_key_pem` is the
     /// matching PKCS#8 private key. Both are required.
     ///
-    /// Client authentication is opt-in. By default the server requests but
-    /// does not require a client certificate. Set `allow_only_known_peers=True`
-    /// together with one or more `known_peer_pems` to pin acceptable client
-    /// certificates; supply `client_ca_pem` to validate the client chain
-    /// against your own CA.
+    /// Client authentication follows the trust anchors. Without
+    /// `client_ca_pem` the server requests no client certificate and accepts
+    /// any client. With `client_ca_pem` it requests one and validates the
+    /// chain against that CA when the client presents one, but still accepts
+    /// a client that presents none; `require_client_auth=True` refuses such a
+    /// client. `allow_only_known_peers=True`, together with one or more
+    /// `known_peer_pems`, accepts only a client presenting one of those
+    /// certificates and also makes the certificate mandatory. A mandatory
+    /// client certificate needs `client_ca_pem`: without it `start()` raises
+    /// `ValueError` rather than accept every client.
     ///
     /// `min_tls_version` / `max_tls_version` accept ``"tls1.2"`` or
-    /// ``"tls1.3"`` (defaults: tls1.2-tls1.3). The cipher suite list is
-    /// hard-coded to the IEC 62351-3 ECDHE-RSA-AES-GCM whitelist.
+    /// ``"tls1.3"`` (defaults: tls1.2-tls1.3). The cipher suites are fixed
+    /// to the IEC 62351-3 whitelist: ECDHE-RSA and ECDHE-ECDSA with AES-GCM
+    /// for TLS 1.2, and TLS_AES_128_GCM_SHA256 and TLS_AES_256_GCM_SHA384 for
+    /// TLS 1.3.
     ///
     /// Only valid before `start()`.
     #[pyo3(signature = (
@@ -6352,6 +6361,7 @@ impl PyIedServer {
         client_ca_pem=None,
         allow_only_known_peers=false,
         known_peer_pems=Vec::new(),
+        require_client_auth=false,
         time_validation=true,
         crl_pems=Vec::new(),
         session_resumption=true,
@@ -6366,6 +6376,7 @@ impl PyIedServer {
         client_ca_pem: Option<Vec<u8>>,
         allow_only_known_peers: bool,
         known_peer_pems: Vec<Vec<u8>>,
+        require_client_auth: bool,
         time_validation: bool,
         crl_pems: Vec<Vec<u8>>,
         session_resumption: bool,
@@ -6390,6 +6401,7 @@ impl PyIedServer {
             client_ca_pem,
             allow_only_known_peers,
             known_peer_pems,
+            require_client_auth,
             time_validation,
             crl_pems,
             session_resumption,

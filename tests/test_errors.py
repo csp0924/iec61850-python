@@ -146,6 +146,87 @@ async def test_trusted_tls_session_connects(
             await conn.disconnect()
 
 
+async def test_required_client_certificate_refuses_a_client_without_one(
+    server_id: Identity, client_id: Identity
+) -> None:
+    """`require_client_auth=True` refuses a client that presents no
+    certificate, where the same server without it accepts that client."""
+
+    def configure(server: iec61850.IedServer) -> None:
+        server.with_tls(
+            server_cert_pem=server_id.cert,
+            server_key_pem=server_id.key,
+            client_ca_pem=client_id.cert,
+            require_client_auth=True,
+            min_tls_version="tls1.3",
+        )
+
+    async with _demo.hosted_demo(configure=configure) as server:
+        anonymous = iec61850.TlsConfig(
+            ca_pem=server_id.cert, min_version=iec61850.TlsVersion.TLS_1_3
+        )
+        with pytest.raises(iec61850.IedTlsError):
+            await iec61850.IedConnection.connect_tls(
+                server.bound_addr, anonymous, SERVER_CN
+            )
+
+        trusted = iec61850.TlsConfig(
+            ca_pem=server_id.cert,
+            client_cert_pem=client_id.cert,
+            client_key_pem=client_id.key,
+            min_version=iec61850.TlsVersion.TLS_1_3,
+        )
+        conn = await iec61850.IedConnection.connect_tls(
+            server.bound_addr, trusted, SERVER_CN
+        )
+        try:
+            assert await conn.read_bool(_demo.IND1, iec61850.FC.ST) is True
+        finally:
+            await conn.disconnect()
+
+
+async def test_optional_client_certificate_admits_a_client_without_one(
+    server_id: Identity, client_id: Identity
+) -> None:
+    """With a client CA but without `require_client_auth`, a client that
+    presents no certificate is admitted."""
+
+    def configure(server: iec61850.IedServer) -> None:
+        server.with_tls(
+            server_cert_pem=server_id.cert,
+            server_key_pem=server_id.key,
+            client_ca_pem=client_id.cert,
+            min_tls_version="tls1.3",
+        )
+
+    async with _demo.hosted_demo(configure=configure) as server:
+        anonymous = iec61850.TlsConfig(
+            ca_pem=server_id.cert, min_version=iec61850.TlsVersion.TLS_1_3
+        )
+        conn = await iec61850.IedConnection.connect_tls(
+            server.bound_addr, anonymous, SERVER_CN
+        )
+        try:
+            assert await conn.read_bool(_demo.IND1, iec61850.FC.ST) is True
+        finally:
+            await conn.disconnect()
+
+
+async def test_required_client_certificate_without_a_ca_fails_to_start(
+    server_id: Identity,
+) -> None:
+    server = iec61850.IedServer.from_scl(_demo.DEMO_CID, ied_name=_demo.IED_NAME)
+    server.bind("127.0.0.1:0")
+    server.with_tls(
+        server_cert_pem=server_id.cert,
+        server_key_pem=server_id.key,
+        require_client_auth=True,
+    )
+    with pytest.raises(ValueError, match="trust anchor"):
+        await server.start()
+    assert not server.is_running
+
+
 async def test_missing_object_carries_the_data_access_code(demo_server: str) -> None:
     conn = await iec61850.IedConnection.connect(demo_server)
     try:
