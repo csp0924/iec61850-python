@@ -108,7 +108,8 @@ jobs:
                         09_dataset_dynamic.py \
                         10_setting_groups.py \
                         11_journal_log.py \
-                        12_tls_secured_session.py; do
+                        12_tls_secured_session.py \
+                        14_dataset_directory_batch_read.py; do
             echo "== $script"
             uv run --no-sync --project .. python "$script"
           done
