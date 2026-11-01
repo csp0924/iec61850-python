@@ -3911,11 +3911,10 @@ struct PendingSettingGroupHandler {
 
 /// Queued `register_log_control` registration.
 ///
-/// LCB triggers are explicit (`log_value`), not auto-driven by `update_*` —
-/// see `iec61850_server::logging::LogControl::log_single_value`. The block is
-/// materialised at `start()`: an `InMemoryLogStorage` is allocated, the LCB
-/// is wired up, and the `(domain, item)` registry entry becomes visible to
-/// the MMS dispatcher for `ReadJournal` routing.
+/// The block is materialised at `start()`: an `InMemoryLogStorage` is
+/// allocated, the LCB is wired up, and the `(domain, item)` registry entry
+/// becomes visible to the server, which records the updates of the data set
+/// members into the storage and routes `ReadJournal` by the block's LogRef.
 struct PendingLogControl {
     /// Full MMS path `"<domain>/<LN>$LG$<lcb_name>"`.
     mms_path: String,
@@ -4155,8 +4154,8 @@ async fn server_do_start(
         }
     }
     // LCBs: allocate an in-memory `LogStorage` per block, wire the LCB, and
-    // hand the `Arc<LogControl>` to the server registry. The dataset is recorded
-    // by name only — the Rust-side trigger path is explicit (`log_value`).
+    // hand the `Arc<LogControl>` to the server registry. The block records the
+    // members of the data set it names once that data set is registered.
     for plcb in pending_lcbs {
         let lc = build_log_control(&plcb)?;
         server_arc.register_log_control(plcb.domain.clone(), plcb.item.clone(), Arc::new(lc));
@@ -5180,7 +5179,8 @@ fn build_log_control(plcb: &PendingLogControl) -> PyResult<RustLogControl> {
 // Mirrors the IedModelBuilder fluent API behind a single declarative payload:
 // callers pass one dict shaped like an SCL skeleton, the walker validates and
 // invokes the underlying builders. RCB / LCB / SGCB declared here land in the
-// model so the server picks them up at `start()` exactly as it would for SCL.
+// model exactly as they would from SCL: the SGCB is served on its own, and
+// `register_from_model()` registers the data sets, RCBs and LCBs.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Build a `RustIedModel` from a `dict`-style spec. The accepted shape is
@@ -6642,7 +6642,10 @@ impl PyIedServer {
     /// Set ``add_cause`` on the raised exception (e.g.
     /// ``"BlockedByInterlocking"``, ``"NotSupported"``, or the numeric
     /// MMS code) to control the reported `ControlAddCause`; absence
-    /// falls back to ``"Unknown"``.
+    /// falls back to ``"Unknown"``. Under the normal-security models a
+    /// failing ``operate`` is not reported to the client, so refuse a
+    /// command from ``check`` or ``wait`` instead. A time-activated operate
+    /// (an ``Oper`` with an ``operTm``) is refused with ``NotSupported``.
     ///
     /// `action_dict` keys: ``ctl_num``, ``test``, ``synchro_check``,
     /// ``interlock_check``, ``is_select``, ``t`` (the eight UTC_TIME octets
@@ -7105,12 +7108,21 @@ impl PyIedServer {
     ///
     /// `path` selects the block at ``"<LD>/<LN>.<lcb_name>"`` and resolves to
     /// the MMS-wire path ``"<domain>/<LN>$LG$<lcb_name>"``. `dataset` is the
-    /// dataset reference recorded on the block (caller convention
-    /// ``"<LN>$<dsName>"``); the dataset itself does not need to be registered
-    /// with `add_dataset`, because journal entries are written by explicit
-    /// `log_value` calls rather than auto-triggered on `update_*`.
+    /// data set the block records (caller convention ``"<LN>$<dsName>"``).
+    /// `log_ref` is the journal reference ``"<domain>/<LN>$<name>"`` clients
+    /// pass to ReadJournal.
     ///
-    /// `trg_ops` advertises which trigger options the LCB declares on the wire
+    /// The server writes the journal itself: an update of a member of the
+    /// data set writes an entry when `trg_ops` enable a reason the update
+    /// raises (data change, quality change or data update), and with
+    /// ``"integrity"`` and a non-zero `intg_pd_ms` one entry holding the
+    /// whole data set is written every period; general interrogation writes
+    /// none. The updates made inside one `batch()` write one entry. The data
+    /// set has to be registered, with `add_dataset` or
+    /// `register_from_model`, for its members to be recorded; `log_value`
+    /// adds entries of the application's own.
+    ///
+    /// `trg_ops` selects the trigger options of the block
     /// (``"data_changed"`` / ``"quality_changed"`` / ``"data_update"`` /
     /// ``"integrity"`` / ``"gi"`` / ``"all"`` / ``"none"``); defaults to
     /// ``"data_changed"``.
@@ -7512,10 +7524,15 @@ impl PyIedServer {
             })
     }
 
-    /// Acquire the server's data-model lock for an atomic batch update.
+    /// Acquire the server's data-model lock to group several updates.
     ///
-    /// While the returned guard is held, no other caller can take the lock
-    /// (re-entry raises `RuntimeError`). Typical use:
+    /// The triggers of the updates made while the returned guard is held are
+    /// raised together when it is released: a report control block without a
+    /// buffer time sends one report, a buffered one stores one entry, and a
+    /// log control block writes one entry. Buffer-time expiry and integrity
+    /// and general-interrogation reports wait for the release; client reads
+    /// are not held back. While the guard is held, no other caller can take
+    /// the lock (re-entry raises `RuntimeError`). Typical use:
     ///
     /// .. code:: python
     ///
