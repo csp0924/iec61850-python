@@ -7063,11 +7063,12 @@ impl PyIedServer {
     /// Abort the association `conn_id` names, the ``conn_id`` the read,
     /// write and control callbacks receive.
     ///
-    /// The connection sends an ACSE A-ABORT and closes its socket on the next
-    /// turn of its loop, so it may still be open when this returns. An id
-    /// that names no open association is ignored. Raises `RuntimeError` when
-    /// the server is not running.
-    fn abort_connection(&self, conn_id: u64) -> PyResult<()> {
+    /// Returns ``True`` when an open association has that id and was marked
+    /// for abort, ``False`` when none has, as for one that has already
+    /// closed. The connection sends an ACSE A-ABORT and closes its socket on
+    /// the next turn of its loop, so it may still be open when this returns.
+    /// Raises `RuntimeError` when the server is not running.
+    fn abort_connection(&self, conn_id: u64) -> PyResult<bool> {
         let server = match &*self.state.lock().unwrap() {
             ServerState::Running { server, .. } => Arc::clone(server),
             _ => {
@@ -7076,10 +7077,7 @@ impl PyIedServer {
                 ))
             }
         };
-        server
-            .abort_connection(conn_id)
-            .map(|_| ())
-            .map_err(map_server_error)
+        Ok(server.abort_connection(conn_id))
     }
 
     /// Number of data sets clients have created at run time and not yet

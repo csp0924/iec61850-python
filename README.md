@@ -1283,8 +1283,8 @@ A hosted server raises these exceptions:
 
 While running, `connection_count` reports the open connections,
 `abort_connection(conn_id)` aborts the one association a callback's `conn_id`
-names, `abort_all_connections()` aborts every association and returns how many
-it marked, and `dynamic_dataset_count()` counts the data sets clients have
+names and returns whether it found it, `abort_all_connections()` aborts every
+association and returns how many it marked, and `dynamic_dataset_count()` counts the data sets clients have
 created.
 
 The server bounds what a client can hold open:
@@ -2303,8 +2303,9 @@ Tracks iec61850-rust v0.4.0.
 - `IedServer.abort_connection(conn_id)` aborts the one association named by
   the `conn_id` the read, write and control callbacks receive. That connection
   sends an ACSE A-ABORT and closes, possibly after the call returns; every
-  other association stays open. An id naming no open association is ignored.
-  Raises `RuntimeError` when the server is not running.
+  other association stays open. It returns `True` when it found the
+  association and `False` for an id naming no open association. Raises
+  `RuntimeError` when the server is not running.
 - Tagged value `{"type": "structure", "value": [...]}`: the components in
   order, each a plain value or a tagged dict, so structures nest. `write`,
   `select_with_value`, `operate` and `cancel` accept it; an APC sends its

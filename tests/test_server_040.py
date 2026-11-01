@@ -848,7 +848,7 @@ async def test_abort_connection_closes_only_the_named_association() -> None:
             kept_id, kicked_id = readers
             assert kept_id != kicked_id
 
-            server.abort_connection(kicked_id)
+            assert server.abort_connection(kicked_id) is True
             assert await _until(lambda: server.connection_count == 1)
             with pytest.raises(IedConnectionError) as lost:
                 await kicked.read_bool(_demo.IND1, FC.ST)
@@ -858,6 +858,8 @@ async def test_abort_connection_closes_only_the_named_association() -> None:
             assert await kept.read_bool(_demo.IND1, FC.ST) is not None
             assert kept.is_connected is True
             assert readers[-1] == kept_id
+            # The association is gone, so the same id now names nothing.
+            assert server.abort_connection(kicked_id) is False
         finally:
             await kept.disconnect()
             await kicked.abort()
@@ -870,7 +872,7 @@ async def test_abort_connection_ignores_an_unknown_id() -> None:
     async with server:
         conn = await IedConnection.connect(server.bound_addr)
         try:
-            assert server.abort_connection(2**63) is None
+            assert server.abort_connection(2**63) is False
             assert await conn.read_bool(_demo.IND1, FC.ST) is not None
             assert server.connection_count == 1
         finally:
