@@ -309,20 +309,24 @@ The hosted server answers Identify with the `vendor`, `model_name` and
 
 ### Substitution (§13)
 
-| Service                              | Py-C | Py-S | Rust-C | Rust-S |
-|--------------------------------------|:----:|:----:|:------:|:------:|
-| Set substituted value (FC=SV writes) | yes  | yes  |  yes   |  yes   |
-| Dedicated Substitution service API   |  —   |  —   |   —    |   —    |
+| Service                              |    Py-C     |    Py-S     |   Rust-C    |   Rust-S    |
+|--------------------------------------|:-----------:|:-----------:|:-----------:|:-----------:|
+| Set substituted value (FC=SV writes) | partial (12) | partial (12) | partial (12) | partial (12) |
+| Dedicated Substitution service API   |      —      |      —      |      —      |      —      |
+
+12. The `SV` functional constraint is writable by the default write access
+    policy, and `MV`, `CMV` and `SAV` carry the substitution attributes, but
+    a read does not itself switch to the substituted value.
 
 ### Setting Group Control Block — SGCB (§14)
 
-| Service                               |  Py-C   |  Py-S   | Rust-C | Rust-S |
-|---------------------------------------|:-------:|:-------:|:------:|:------:|
-| SelectActiveSG / SelectEditSG         | yes (6) | yes (6) | partial (6) |  yes   |
-| GetSGCBValues / SetSGCBValues         | yes (6) | yes (6) | partial (6) |  yes   |
-| ConfirmEditSGValues                   | yes (6) | yes (6) | partial (6) |  yes   |
-| Setting access (FC=SG / FC=SE writes) |   yes   |   yes   |     yes     |  yes   |
-| Values of every setting group         |   n/a   |   yes   |     n/a     |  yes   |
+| Service                               |    Py-C     |  Py-S   |   Rust-C    | Rust-S |
+|---------------------------------------|:-----------:|:-------:|:-----------:|:------:|
+| SelectActiveSG / SelectEditSG         | partial (6) | yes (6) | partial (6) |  yes   |
+| GetSGCBValues / SetSGCBValues         | partial (6) | yes (6) | partial (6) |  yes   |
+| ConfirmEditSGValues                   | partial (6) | yes (6) | partial (6) |  yes   |
+| Setting access (FC=SG / FC=SE writes) |     yes     |   yes   |     yes     |  yes   |
+| Values of every setting group         |     n/a     |   yes   |     n/a     |  yes   |
 
 6. Server-side SGCB is declared via SCL `<SettingControl numOfSGs="N"/>`
    on LN0; runtime ActSG / EditSG / ConfirmEditSG state machine plus
@@ -381,11 +385,11 @@ The hosted server answers Identify with the `vendor`, `model_name` and
 
 ### Generic Substation Event — GOOSE / GSE (§18)
 
-| Service                 |       Py-C        |       Py-S        | Rust-C | Rust-S |
-|-------------------------|:-----------------:|:-----------------:|:------:|:------:|
-| GoCB — Get / Set values |     yes (14)      |     yes (14)      |  yes   |  yes   |
-| GOOSE publish           | no, by design (7) | no, by design (7) |  n/a   |  yes   |
-| GOOSE subscribe         | no, by design (7) | no, by design (7) |  yes   |  n/a   |
+| Service                 |       Py-C        |       Py-S        |    Rust-C    |    Rust-S    |
+|-------------------------|:-----------------:|:-----------------:|:------------:|:------------:|
+| GoCB — Get / Set values |   partial (14)    |   partial (14)    | partial (14) | partial (14) |
+| GOOSE publish           | no, by design (7) | no, by design (7) |     n/a      |     yes      |
+| GOOSE subscribe         | no, by design (7) | no, by design (7) |     yes      |     n/a      |
 
 7. **By design, not on the Python roadmap.** GOOSE is a hard-real-time L2
    protocol (IEC 61850-8-1; T1 retransmission floor = 4 ms; protection
@@ -398,9 +402,11 @@ The hosted server answers Identify with the `vendor`, `model_name` and
 14. MMS administration of a GOOSE control block, which involves no
     Ethernet frame. The client reads the nine components with
     `get_gocb_values` and writes `GoEna`, `GoID` and `DatSet` with
-    `set_gocb_values`. The hosted server serves the GoCBs
-    `register_from_model()` registers; `GoID` and `DatSet` are writable
-    while `GoEna` is false, and read-only under `set_edition("ed2.1")`.
+    `set_gocb_values`, one attribute per request. The hosted server serves
+    the GoCBs `register_from_model()` registers; `GoID` and `DatSet` are
+    writable while `GoEna` is false, and read-only under
+    `set_edition("ed2.1")`. The other six components are read-only, and
+    `FixedOffs` always reads false.
 
 ### Transmission of Sampled Values — SVCB (§19) (8)
 
