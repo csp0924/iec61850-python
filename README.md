@@ -461,8 +461,10 @@ registers every controllable data object of the model.
 | SNTP / NTP client            | yes (10) | n/a  | yes (10) |   n/a   |
 
 9. SNTPv4 unicast server in `iec61850-sntp` (mode 3 → mode 4 reply).
-   Not yet exposed through this Python package; the package targets the
-   client side for time sync.
+   Not exposed from Python by design: answering time requests with useful
+   accuracy needs the host clock, timestamping close to the socket and a
+   UDP port of its own, which an IED's operating system time service
+   provides; the package covers the client side (footnote 10).
 10. SNTPv4 unicast client. From Python use `iec61850.query_sntp(addr,
     timeout_s)`; from Rust use `iec61850_sntp::SntpClient`. Single-sample
     offset / round-trip via RFC 4330 §5 four-timestamp formula. `addr` is
@@ -509,6 +511,44 @@ the Rust API stay out of this package on purpose:
 - The internal registries, the reporting engine and the storage traits:
   they bypass the `update_*` path; the server methods above cover what
   they do.
+- Request blocking on a server connection (`block_requests` /
+  `set_block_requests`): the server uses it for maintenance and while it
+  aborts a connection; aborting the connection drops a client outright.
+- `IedServer::set_ignore_read_access`: it bypasses every read handler at
+  once; register or omit `on_read` handlers instead.
+- `IedConnection::get_logical_node_variables`: it returns the raw MMS
+  variable names of one logical node, which `get_device_model()` already
+  lists for the whole device.
+- `IedConnection::get_data_directory_by_fc`: `get_variable_specification`
+  with that functional constraint names the same children, with their
+  types.
+- `ControlObjectClient::wait_command_termination`: `operate()` under an
+  enhanced-security model already waits for the CommandTermination and
+  reports its outcome.
+- The options of `IedServer::register_from_model_with` (log storage
+  factory, GOOSE destination factory, wall clock): they supply Rust objects
+  the server calls from its own threads on every log entry and
+  publication, which from Python would take the GIL on those paths;
+  `register_from_model()` uses in-memory logs and the system clock, and
+  `register_log_control` configures one log explicitly.
+- `DataAttribute::assign`: it writes the model without raising reports or
+  log entries; `update_*`, `update_array` and `batch()` do the same with
+  triggers.
+- The SNTP server (footnote 9).
+- `TlsStream::negotiated_cipher_suite`: the client keeps its TLS stream
+  inside the connection and exposes none, so there is nothing to ask; the
+  suite is always one of the fixed list under [TLS](#tls).
+- Persistent report buffers (the SQLite backend): it needs the
+  `sqlite-backend` feature, which the wheels do not build, plus a database
+  path and a lifetime the application manages; `register_brcb` buffers in
+  memory.
+- The TLS 1.3 session ticket count of a hosted server
+  (`tls13_session_tickets`): it stays at 0, as some TLS 1.3 clients close
+  the connection when a ticket arrives; TLS 1.2 session resumption works.
+- The IEC 62351-3 TLS event handler (`with_event_handler`): the TLS layer
+  calls it synchronously on its own threads for every event, so a Python
+  callback would take the GIL inside each handshake; handshake failures
+  surface as `IedTlsError` on the client.
 
 ## Quick start
 
@@ -1313,8 +1353,9 @@ server.with_tls(
 ```
 
 Defaults: TLS 1.2 - 1.3, the IEC 62351-3 cipher suites listed under
-[TLS](#tls), time validation on, session resumption on, no client-cert
-pinning; a client certificate
+[TLS](#tls), time validation on, session resumption on (TLS 1.2 session
+IDs; the server sends no TLS 1.3 session ticket, so a TLS 1.3 session does
+not resume), no client-cert pinning; a client certificate
 chain is always validated against `client_ca_pem`. `min_tls_version` and
 `max_tls_version` accept `"tls1.2"` / `"tls1.3"`.
 
