@@ -22,6 +22,7 @@ from ._dataclasses import (
     QualityDetail,
     ReportOptFlds,
     ServerIdentity,
+    ServerStatus,
     TlsConfig,
     TriggerOptions,
     TypeSpec,
@@ -698,6 +699,18 @@ class IedConnection:
         """
         raw = await self._native_conn.get_server_identity()
         return ServerIdentity.from_native(raw)
+
+    async def get_server_status(
+        self, extended_derivation: bool = False
+    ) -> ServerStatus:
+        """Read the logical and physical status of the server (MMS Status).
+
+        ``extended_derivation`` asks the server to derive the status by an
+        extended self-diagnosis rather than report the status it holds; a
+        server may answer both requests alike.
+        """
+        raw = await self._native_conn.get_server_status(extended_derivation)
+        return ServerStatus.from_native(raw)
 
     # ─── reporting ────────────────────────────────────────────────────────
     async def install_report_handler(

@@ -56,3 +56,43 @@ def test_identity_from_native_keeps_abstract_syntaxes() -> None:
         }
     )
     assert identity.abstract_syntaxes == ("1.0.9506.2.1", "1.0.9506.2.3")
+
+
+@pytest.mark.parametrize("extended_derivation", [False, True])
+async def test_status_reports_operational_server(
+    demo_server: str, extended_derivation: bool
+) -> None:
+    conn = await iec61850.IedConnection.connect(demo_server)
+    try:
+        status = await conn.get_server_status(extended_derivation)
+    finally:
+        await conn.disconnect()
+    assert isinstance(status, iec61850.ServerStatus)
+    assert status.logical == "state-changes-allowed"
+    assert status.logical_code == 0
+    assert status.physical == "operational"
+    assert status.physical_code == 0
+    assert status.local_detail is None
+
+
+async def test_status_after_disconnect_raises(demo_server: str) -> None:
+    conn = await iec61850.IedConnection.connect(demo_server)
+    await conn.disconnect()
+    with pytest.raises(iec61850.IedConnectionError):
+        await conn.get_server_status()
+
+
+def test_status_from_native_keeps_other_value_and_detail() -> None:
+    status = iec61850.ServerStatus.from_native(
+        {
+            "logical": "other",
+            "logical_code": 7,
+            "physical": "needs-commissioning",
+            "physical_code": 3,
+            "local_detail": [True, False, True],
+        }
+    )
+    assert status.logical == "other"
+    assert status.logical_code == 7
+    assert status.physical == "needs-commissioning"
+    assert status.local_detail == (True, False, True)

@@ -1914,6 +1914,37 @@ impl PyIedConnection {
         })
     }
 
+    /// Read the logical and physical status of the server (MMS Status).
+    ///
+    /// `extended_derivation` asks the server to derive the status by an
+    /// extended self-diagnosis. Resolves to `{"logical": str,
+    /// "logical_code": int, "physical": str, "physical_code": int,
+    /// "local_detail": [bool, ...] | None}`; a status value outside the named
+    /// ones reads `"other"` with its wire value in the `_code` key.
+    #[pyo3(signature = (extended_derivation = false))]
+    fn get_server_status<'py>(
+        &self,
+        py: Python<'py>,
+        extended_derivation: bool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let conn = Arc::clone(&self.inner);
+        future_into_py(py, async move {
+            let status = conn
+                .get_server_status(extended_derivation)
+                .await
+                .map_err(|e| map_client_error(e, ErrCtx::Service))?;
+            Python::attach(|py| -> PyResult<Py<PyAny>> {
+                let d = PyDict::new(py);
+                d.set_item("logical", logical_status_token(status.logical))?;
+                d.set_item("logical_code", status.logical.code())?;
+                d.set_item("physical", physical_status_token(status.physical))?;
+                d.set_item("physical_code", status.physical.code())?;
+                d.set_item("local_detail", status.local_detail.clone())?;
+                Ok(d.into_any().unbind())
+            })
+        })
+    }
+
     /// Create a control handle for a single controllable DO.
     ///
     /// `object_ref` is `"<LD>/<LN>.<DO>"`. `ctl_model` is one of
@@ -1933,6 +1964,32 @@ impl PyIedConnection {
         Ok(PyControlObjectClient {
             inner: Arc::new(AsyncMutex::new(handle)),
         })
+    }
+}
+
+/// Python token for a `vmdLogicalStatus`; a value outside the named ones reads
+/// ``"other"``.
+fn logical_status_token(status: iec61850_client::VmdLogicalStatus) -> &'static str {
+    use iec61850_client::VmdLogicalStatus as S;
+    match status {
+        S::StateChangesAllowed => "state-changes-allowed",
+        S::NoStateChangesAllowed => "no-state-changes-allowed",
+        S::LimitedServicesPermitted => "limited-services-permitted",
+        S::SupportServicesAllowed => "support-services-allowed",
+        _ => "other",
+    }
+}
+
+/// Python token for a `vmdPhysicalStatus`; a value outside the named ones
+/// reads ``"other"``.
+fn physical_status_token(status: iec61850_client::VmdPhysicalStatus) -> &'static str {
+    use iec61850_client::VmdPhysicalStatus as S;
+    match status {
+        S::Operational => "operational",
+        S::PartiallyOperational => "partially-operational",
+        S::Inoperable => "inoperable",
+        S::NeedsCommissioning => "needs-commissioning",
+        _ => "other",
     }
 }
 

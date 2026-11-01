@@ -347,6 +347,40 @@ class ServerIdentity:
 
 
 @dataclass(frozen=True, slots=True)
+class ServerStatus:
+    """Status a server reports through the MMS Status service.
+
+    ``logical`` is the ``vmdLogicalStatus`` as a token:
+    ``"state-changes-allowed"``, ``"no-state-changes-allowed"``,
+    ``"limited-services-permitted"`` or ``"support-services-allowed"``.
+    ``physical`` is the ``vmdPhysicalStatus``: ``"operational"``,
+    ``"partially-operational"``, ``"inoperable"`` or
+    ``"needs-commissioning"``. A value outside the named ones reads
+    ``"other"``; ``logical_code`` and ``physical_code`` always hold the wire
+    value. ``local_detail`` holds the implementation-specific detail bits in
+    order, or ``None`` when the server sends none.
+    """
+
+    logical: str
+    physical: str
+    logical_code: int
+    physical_code: int
+    local_detail: tuple[bool, ...] | None = None
+
+    @classmethod
+    def from_native(cls, raw: Mapping[str, Any]) -> "ServerStatus":
+        """Build from the dict ``_native.IedConnection.get_server_status`` returns."""
+        detail = raw["local_detail"]
+        return cls(
+            logical=raw["logical"],
+            physical=raw["physical"],
+            logical_code=raw["logical_code"],
+            physical_code=raw["physical_code"],
+            local_detail=tuple(detail) if detail is not None else None,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class DataSetMember:
     """Member spec for ``create_data_set()``."""
 

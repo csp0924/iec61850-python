@@ -319,6 +319,10 @@ class IedConnection:
     # Server identification
     # `{"vendor", "model", "revision", "abstract_syntaxes": [dotted OID, ...]}`.
     def get_server_identity(self) -> Awaitable[dict[str, Any]]: ...
+    # `{"logical", "logical_code", "physical", "physical_code", "local_detail"}`.
+    def get_server_status(
+        self, extended_derivation: bool = ...
+    ) -> Awaitable[dict[str, Any]]: ...
 
     # Control
     def create_control_object(
