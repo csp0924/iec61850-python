@@ -1026,3 +1026,21 @@ def test_communication_addressing_reads_from_the_model() -> None:
     assert gse["parameters"]["APPID"] == "1000"
     assert server.gse_address("LD0", "noSuchGoCB") is None
     assert server.smv_address("LD0", "noSuchSvCB") is None
+
+
+def test_a_connected_ap_of_an_ied_the_file_lacks_is_skipped() -> None:
+    """A <ConnectedAP> naming an IED the file does not declare does not stop
+    the SCL from loading; the loaded IED keeps its own addressing."""
+    cid = _demo.DEMO_CID.read_text(encoding="utf-8")
+    extra = (
+        '      <ConnectedAP iedName="NoSuchIED" apName="AP1">\n'
+        '        <Address><P type="IP">10.0.0.9</P></Address>\n'
+        "      </ConnectedAP>\n"
+    )
+    anchor = "    </SubNetwork>"
+    assert cid.count(anchor) == 1
+    server = IedServer.from_scl_str(
+        cid.replace(anchor, extra + anchor), ied_name=_demo.IED_NAME
+    )
+    [ap] = server.connected_access_point("AP1")
+    assert ap["address"]["ip"] == "127.0.0.1"
