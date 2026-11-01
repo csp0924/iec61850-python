@@ -338,13 +338,30 @@ class RcbWriteMask:
 
 
 class ReportDispatcher:
-    """Background task that polls the report queue at a fixed interval."""
+    """Background task that polls the report queue at a fixed interval.
 
-    __slots__ = ("_task", "_stopped")
+    Polling ends when :meth:`stop` is called or when a poll raises, for
+    example because the connection was lost. In the second case the
+    exception is kept: :attr:`done` turns true and :meth:`exception` returns
+    it.
+    """
+
+    __slots__ = ("_task", "_stopped", "_error")
 
     def __init__(self, task: asyncio.Task[None]) -> None:
         self._task = task
         self._stopped = False
+        self._error: BaseException | None = None
+
+    @property
+    def done(self) -> bool:
+        """Whether polling has ended, by :meth:`stop` or by an error."""
+        return self._task.done()
+
+    def exception(self) -> BaseException | None:
+        """The exception that ended polling, or ``None`` while polling or
+        after :meth:`stop`."""
+        return self._error
 
     def stop(self) -> None:
         if not self._stopped:
@@ -775,10 +792,22 @@ class IedConnection:
         """
         return await self._native_conn.poll_reports(timeout_ms)
 
-    def spawn_report_dispatcher(self, interval_ms: int = 100) -> ReportDispatcher:
+    def spawn_report_dispatcher(
+        self,
+        interval_ms: int = 100,
+        *,
+        on_error: Callable[[BaseException], object] | None = None,
+    ) -> ReportDispatcher:
         """Background dispatch: keep calling ``poll_reports`` until the
-        returned ``ReportDispatcher`` is stopped.
+        returned ``ReportDispatcher`` is stopped or a poll raises.
+
+        A poll that raises, for example ``IedConnectionError`` once the
+        connection is lost, ends the dispatcher; the exception is available
+        from ``ReportDispatcher.exception()`` and is passed to ``on_error``,
+        called once on the event loop. An exception raised by ``on_error`` is
+        reported through the loop's exception handler.
         """
+        dispatcher: ReportDispatcher
 
         async def _loop() -> None:
             while True:
@@ -786,12 +815,22 @@ class IedConnection:
                     await self.poll_reports(interval_ms)
                 except asyncio.CancelledError:
                     raise
-                except Exception:
-                    # Connection drop or transient error — stop polling.
+                except Exception as exc:
+                    dispatcher._error = exc
+                    if on_error is not None:
+                        try:
+                            on_error(exc)
+                        except Exception as callback_exc:
+                            asyncio.get_running_loop().call_exception_handler(
+                                {
+                                    "message": "ReportDispatcher on_error callback raised",
+                                    "exception": callback_exc,
+                                }
+                            )
                     return
 
-        task = asyncio.create_task(_loop())
-        return ReportDispatcher(task)
+        dispatcher = ReportDispatcher(asyncio.create_task(_loop()))
+        return dispatcher
 
     # ─── GOOSE control blocks ─────────────────────────────────────────────
     async def get_gocb_values(self, gocb_ref: str) -> GoCBValues:

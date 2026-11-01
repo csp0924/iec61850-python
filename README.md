@@ -1865,6 +1865,8 @@ Tracks iec61850-rust v0.4.0.
 - `IedServer.update_quality(path, quality)` takes a `Quality` or the integer
   `Quality.to_bits()` returns, in the bit order `read_quality` decodes;
   `update_bit_string_from_int` keeps its most-significant-bit-first order.
+- `spawn_report_dispatcher` takes `on_error`, called once with the exception
+  that ends polling; `ReportDispatcher.done` and `exception()` report it.
 
 #### Changed behavior (from iec61850-rust 0.4.0)
 

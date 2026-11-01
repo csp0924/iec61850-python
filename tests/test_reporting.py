@@ -134,3 +134,32 @@ async def test_spawn_report_dispatcher_runs_and_stops(demo_server: str) -> None:
         await dispatcher.aclose()
     finally:
         await conn.disconnect()
+
+
+async def test_report_dispatcher_keeps_the_error_that_ended_it() -> None:
+    """Losing the connection ends the dispatcher: the error is kept and
+    `on_error` is called with it once."""
+    errors: list[BaseException] = []
+    ended = asyncio.Event()
+
+    def on_error(exc: BaseException) -> None:
+        errors.append(exc)
+        ended.set()
+
+    async with _demo.hosted_demo() as server:
+        conn = await iec61850.IedConnection.connect(server.bound_addr)
+        dispatcher = conn.spawn_report_dispatcher(interval_ms=50, on_error=on_error)
+        assert not dispatcher.done
+        assert dispatcher.exception() is None
+    try:
+        await asyncio.wait_for(ended.wait(), timeout=30)
+        await asyncio.sleep(0)
+        assert dispatcher.done
+        assert isinstance(dispatcher.exception(), iec61850.IedConnectionError)
+        assert errors == [dispatcher.exception()]
+    finally:
+        await dispatcher.aclose()
+        try:
+            await conn.abort()
+        except iec61850.IedError:
+            pass
