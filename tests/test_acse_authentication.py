@@ -98,8 +98,26 @@ async def test_a_named_diagnostic_refuses_with_that_diagnostic() -> None:
 @pytest.mark.filterwarnings("ignore::pytest.PytestUnraisableExceptionWarning")
 @pytest.mark.parametrize(
     "decision",
-    [lambda _r: [], lambda _r: "no-such-diagnostic", lambda _r: 1 / 0],
-    ids=["other-type", "unknown-name", "raises"],
+    [
+        lambda _r: [],
+        lambda _r: "no-such-diagnostic",
+        lambda _r: 1 / 0,
+        lambda _r: 0,
+        lambda _r: "null",
+        lambda _r: 2,
+        lambda _r: 7,
+        lambda _r: "called-AP-title-not-recognized",
+    ],
+    ids=[
+        "other-type",
+        "unknown-name",
+        "raises",
+        "null-code",
+        "null-name",
+        "context-name",
+        "called-ap-title",
+        "called-ap-title-name",
+    ],
 )
 async def test_any_other_answer_refuses_with_authentication_failure(decision) -> None:
     async with _demo.hosted_demo(configure=lambda s: s.set_authenticator(decision)) as server:
@@ -181,3 +199,23 @@ async def test_a_diagnostic_code_refuses_with_that_diagnostic() -> None:
             await _connect(server.bound_addr)
     assert info.value.diagnostic == 14
     assert info.value.diagnostic_name == "authentication-required"
+
+
+@pytest.mark.parametrize(
+    ("decision", "code", "name"),
+    [
+        (3, 3, "calling-AP-title-not-recognized"),
+        (11, 11, "authentication-mechanism-name-not-recognized"),
+        ("calling-AE-qualifier-not-recognized", 5, "calling-AE-qualifier-not-recognized"),
+    ],
+)
+async def test_an_identity_or_credential_diagnostic_refuses_with_it(
+    decision, code: int, name: str
+) -> None:
+    async with _demo.hosted_demo(
+        configure=lambda s: s.set_authenticator(lambda _r: decision)
+    ) as server:
+        with pytest.raises(IedAuthenticationError) as info:
+            await _connect(server.bound_addr)
+    assert info.value.diagnostic == code
+    assert info.value.diagnostic_name == name

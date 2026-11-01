@@ -1409,12 +1409,19 @@ every association is accepted. It receives a mapping with `peer`,
 `calling_ap_title`, `calling_ae_qualifier`, `called_ap_title`,
 `called_ae_qualifier`, `mechanism` (`"none"`, `"password"`, `"certificate"`
 or `"other"`) and `password` (`bytes` or `None`), and returns `None` or
-`True` to accept, `False` to refuse with authentication-failure, or an
-acse-service-user diagnostic name or code to refuse with that diagnostic.
-Any other value, an unknown name or a raised exception refuses with
+`True` to accept, `False` to refuse with authentication-failure, or the
+name or code of an acse-service-user diagnostic that refuses the calling
+identity or the credentials (3 to 6: calling AP-title, AP-invocation
+identifier, AE-qualifier or AE-invocation identifier not recognized; 11 to
+14: authentication mechanism name not recognized or required,
+authentication failure, authentication required) to refuse with that
+diagnostic. Any other value, including any other diagnostic such as 0
+(null), an unknown name, or a raised exception refuses with
 authentication-failure. The refused client receives a Session REFUSE whose
 AARE carries the diagnostic and an Initiate-ErrorPDU with access
-object-access-denied.
+object-access-denied; this package's client raises `IedAuthenticationError`
+for diagnostics 3 to 6 and 11 to 14, so every refusal by an authenticator
+reaches it as that exception.
 
 ```python
 def authenticate(request: dict) -> bool | str | None:
@@ -1425,11 +1432,15 @@ def authenticate(request: dict) -> bool | str | None:
 server.set_authenticator(authenticate)
 ```
 
-The callable runs synchronously while the association is set up, holding
-the GIL, so it must not block; other associations proceed meanwhile.
-Installed before `start()`, it is in place before the first association; on
-a running server it applies to the associations requested afterwards. A
-password reaches it in clear unless the association runs over TLS.
+The callable runs synchronously on a server worker thread while the
+association is set up. A wait that releases the GIL (`threading.Event.wait`,
+socket I/O, `time.sleep`) does not hold up other associations, but it
+occupies that worker until it returns, so many such waits at once exhaust the
+workers; computation that holds the GIL stalls every Python callback of the
+process. Keep it short and do slow checks elsewhere. Installed before
+`start()`, it is in place before the first association; on a running server
+it applies to the associations requested afterwards. A password reaches it in
+clear unless the association runs over TLS.
 
 ### Server-side TLS
 

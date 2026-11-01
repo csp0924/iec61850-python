@@ -4961,10 +4961,12 @@ impl RustWriteHandler for PyWriteHandler {
 /// ``calling_ap_title``, ``calling_ae_qualifier``, ``called_ap_title``,
 /// ``called_ae_qualifier``, ``mechanism`` and ``password``) and decides with
 /// its return value: ``None`` or ``True`` accepts; ``False`` refuses with
-/// authentication-failure; an acse-service-user diagnostic name such as
-/// ``"calling-AP-title-not-recognized"``, or its code, refuses with that
-/// diagnostic. Any other value, an unknown name, or a raised exception
-/// refuses with authentication-failure.
+/// authentication-failure; the name or code of a diagnostic that refuses the
+/// calling identity or the credentials (3 to 6 and 11 to 14, such as
+/// ``"calling-AP-title-not-recognized"``) refuses with that diagnostic. Any
+/// other value, including any other diagnostic, and a raised exception
+/// refuses with authentication-failure, so a refused client always reports
+/// an authentication refusal.
 struct PyAuthenticator {
     callback: Py<PyAny>,
 }
@@ -5027,17 +5029,17 @@ fn association_decision_from_py(value: &Bound<'_, PyAny>) -> RustAssociationDeci
             refuse
         };
     }
-    if let Ok(name) = value.extract::<String>() {
-        return acse_diagnostic_from_name(&name)
-            .map(RustAssociationDecision::Reject)
-            .unwrap_or(refuse);
+    let diagnostic = if let Ok(name) = value.extract::<String>() {
+        acse_diagnostic_from_name(&name)
+    } else if let Ok(code) = value.extract::<u32>() {
+        RustAcseDiagnostic::from_code(code)
+    } else {
+        None
+    };
+    match diagnostic {
+        Some(d) if d.is_authentication_refusal() => RustAssociationDecision::Reject(d),
+        _ => refuse,
     }
-    if let Ok(code) = value.extract::<u32>() {
-        return RustAcseDiagnostic::from_code(code)
-            .map(RustAssociationDecision::Reject)
-            .unwrap_or(refuse);
-    }
-    refuse
 }
 
 /// Builds the mapping an SCL `<Address>` reads as: every ``<P>`` under
@@ -6831,19 +6833,29 @@ impl PyIedServer {
     /// ``called_ae_qualifier`` (``int`` or ``None``), ``mechanism``
     /// (``"none"``, ``"password"``, ``"certificate"`` or ``"other"``) and
     /// ``password`` (``bytes`` or ``None``). It returns ``None`` or ``True``
-    /// to accept; ``False`` to refuse with authentication-failure; or an
-    /// acse-service-user diagnostic name such as
-    /// ``"calling-AP-title-not-recognized"``, or its code, to refuse with that
-    /// diagnostic. Any other value, an unknown name, or a raised exception
-    /// (reported through ``sys.unraisablehook``) refuses with
-    /// authentication-failure. A refused client receives a Session REFUSE
-    /// whose AARE carries the diagnostic and an Initiate-ErrorPDU with access
-    /// object-access-denied, and raises `IedAuthenticationError`.
+    /// to accept; ``False`` to refuse with authentication-failure; or the
+    /// name or code of an acse-service-user diagnostic that refuses the
+    /// calling identity or the credentials — 3 to 6 (calling AP-title,
+    /// AP-invocation-identifier, AE-qualifier, AE-invocation-identifier not
+    /// recognized) and 11 to 14 (authentication mechanism name not
+    /// recognized, mechanism name required, authentication failure,
+    /// authentication required) — to refuse with that diagnostic. Any other
+    /// value, including any other diagnostic such as 0 (null), an unknown
+    /// name, or a raised exception (reported through ``sys.unraisablehook``)
+    /// refuses with authentication-failure. A refused client receives a
+    /// Session REFUSE whose AARE carries the diagnostic and an
+    /// Initiate-ErrorPDU with access object-access-denied; this package's
+    /// client raises `IedAuthenticationError` for diagnostics 3 to 6 and 11
+    /// to 14.
     ///
-    /// The callable runs synchronously while the association is being set
-    /// up, holding the GIL; it must not block. Other associations proceed
-    /// while it runs. A password reaches it in clear unless the association
-    /// runs over TLS.
+    /// The callable runs synchronously on a server worker thread while the
+    /// association is set up. A wait that releases the GIL (``Event.wait``,
+    /// socket I/O, ``time.sleep``) does not hold up other associations, but
+    /// it occupies that worker until it returns, so many such waits at once
+    /// exhaust the workers; computation that holds the GIL stalls every
+    /// Python callback of the process. Keep it short and do slow checks
+    /// elsewhere. A password reaches it in clear unless the association runs
+    /// over TLS.
     ///
     /// Before `start()` it is installed with the server, so no association
     /// is accepted without it; on a running server it applies to the
