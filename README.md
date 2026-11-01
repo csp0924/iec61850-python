@@ -13,9 +13,10 @@ the connection-oriented, application-level services that fit Python's runtime
 characteristics naturally:
 
 - **Client**: read / write / control / dataset / reporting (URCB + BRCB) /
-  log query / SCL parsing / directory queries / TLS
-- **Server hosting**: MMS server with URCB / BRCB / LCB / SGCB / control
-  handlers, declared from SCL **or** from a Python `dict` spec
+  log query / GOOSE control block administration / SCL parsing / directory
+  queries / server identity and status / TLS
+- **Server hosting**: MMS server with URCB / BRCB / LCB / GoCB / SGCB /
+  control handlers, declared from SCL **or** from a Python `dict` spec
 
 **Out of scope by design**: GOOSE (IEC 61850-8-1) and Sampled Values
 (IEC 61850-9-2) are hard-real-time L2 protocols (GOOSE T1 = 4 ms, SV =
@@ -541,10 +542,12 @@ tls = iec61850.TlsConfig(
 )
 ```
 
-Defaults: TLS 1.2-1.3, IEC 62351-3 cipher whitelist, chain and time
-validation on, session resumption on. Set `verify_hostname=False` on
-`TlsConfig` to skip SNI / SAN hostname matching for closed-network
-commissioning (other validation still applies).
+The certificate chain is always validated against `ca_pem`; there is no
+switch to turn that off. Defaults: TLS 1.2-1.3, IEC 62351-3 cipher
+whitelist, time validation on, session resumption on. Set
+`verify_hostname=False` on `TlsConfig` to skip SNI / SAN hostname matching
+for closed-network commissioning, or `time_validation=False` to accept a
+certificate outside its validity period (chain validation still applies).
 
 ### Pinned peers, CRL, version pinning
 
@@ -561,6 +564,22 @@ tls = iec61850.TlsConfig(
     # Revocation checks.
     crl_pems=(open("ca.crl.pem", "rb").read(),),
 )
+```
+
+### Handshake failures
+
+A handshake that fails while the connection is being established raises
+`IedTlsError`, a subclass of `IedConnectionError`. Its `kind` says why:
+`"verification"` (the peer certificate was not accepted),
+`"alert_received"` (the peer refused, for example the client certificate),
+`"version_unsupported"`, `"cipher_unsupported"`, `"timeout"`, `"io"` or
+`"other"`; `message` holds the TLS error text.
+
+```python
+try:
+    conn = await iec61850.IedConnection.connect_tls("10.0.0.1:3782", tls)
+except iec61850.IedTlsError as e:
+    print("TLS refused:", e.kind, e.message)
 ```
 
 ## High-level client
@@ -601,7 +620,10 @@ cfg = iec61850.Iec61850ClientConfig(
 The same `request_timeout_ms` / `max_outstanding` / `local_max_pdu_size`
 keyword arguments are also accepted on `IedConnection.connect` and
 `IedConnection.connect_tls` for callers that prefer to manage the connection
-lifecycle directly.
+lifecycle directly. `max_outstanding` is limited to 65535.
+`max_name_list_names` (on both, and on `Iec61850ClientConfig`) caps the
+names one directory walk collects; past it the walk fails with
+`IedServiceError` whose `reason` is `"name-list-limit"`.
 
 ## Generic read / write
 
@@ -768,6 +790,23 @@ await conn.disconnect()
 await conn.abort()
 ```
 
+### Server identity and status
+
+```python
+identity = await conn.get_server_identity()      # MMS Identify
+print(identity.vendor, identity.model, identity.revision)
+
+status = await conn.get_server_status()          # MMS Status
+print(status.logical, status.physical)           # e.g. "state-changes-allowed", "operational"
+```
+
+`ServerIdentity.abstract_syntaxes` lists the abstract syntaxes the server
+announces as dotted OIDs. `ServerStatus` names a value outside the
+standard set `"other"` and keeps the wire value in `logical_code` /
+`physical_code`; `local_detail` is the optional detail bit string as a
+tuple of `bool`. `get_server_status(extended_derivation=True)` asks the
+server to derive the state from a fresh self-check.
+
 ### ISO addressing
 
 The association a client opens carries the transport, session and presentation
@@ -835,22 +874,40 @@ except iec61850.IedSessionRefusedError as e:
 
 ## Log service
 
-```python
-LOG_REF = "IED1LD0/LLN0$LG$evlog"
+A journal is named by the `LogRef` of its log control block,
+`"<domain>/<LN>$<name>"`, not by the control block's own reference.
 
-# First page — by time range. ``more_follows`` signals that the server
-# truncated the response and the caller should resume.
-entries, more = await conn.query_journal_by_time(LOG_REF, start_ms, end_ms)
+```python
+LOG_REF = "IED1LD0/LLN0$EventLog"
+
+# One ReadJournal request. ``more_follows`` signals that the server stopped
+# at the PDU size and the caller should resume.
+query = iec61850.JournalQuery.by_time(start_ms, end_ms)
+entries, more = await conn.query_journal(LOG_REF, query)
 for e in entries:
     print(e.time_ms, e.entry_id.hex(), len(e.variables))
 
-# Resume from the last seen entry. Both arguments — the entry's ``time_ms``
-# and 8-byte ``entry_id`` — are applied as filters server-side.
+# Every entry the selection covers, following ``more_follows``.
+entries = await conn.query_journal_all(LOG_REF, query)
+
+# Resume after the last seen entry.
 cursor = entries[-1]
-more_entries, _ = await conn.query_journal_after_entry(
-    LOG_REF, cursor.time_ms, cursor.entry_id
+later = await conn.query_journal_all(
+    LOG_REF, iec61850.JournalQuery.starting_after(cursor.time_ms, cursor.entry_id)
 )
 ```
+
+`JournalQuery` carries every selection ReadJournal defines: a start
+(`start_time_ms` or `start_entry`), a stop (`end_time_ms` or
+`max_entries`), the `variables` to return, and `after_entry` as a
+`(time_ms, entry_id)` pair; it raises `ValueError` for a combination the
+service does not allow. `query_journal_all` keeps the selection on every
+continuation, returns each entry once, none past `end_time_ms` and no more
+than `max_entries`, and raises `IedServiceError` with
+`reason == "journal-not-advancing"` when a server reports more entries but
+sends none it has not sent before. `query_journal_by_time(log_ref,
+start_ms, end_ms)` and `query_journal_after_entry(log_ref, time_ms,
+entry_id)` remain as shorthands for one request.
 
 `JournalEntry.variables` is a tuple of `JournalEntryVariable(data_ref,
 value, reason_code)`. Values follow the same conversion rules as
@@ -877,6 +934,45 @@ finally:
     await dispatcher.aclose()
 ```
 
+`ClientReport.entries` holds one entry per data set member, keeping the last
+value an earlier report carried for a member this one omits;
+`ClientReport.included` holds one flag per member, set for the members this
+report carries:
+
+```python
+def on_report(report: iec61850.ClientReport) -> None:
+    for entry, carried in zip(report.entries, report.included, strict=True):
+        if carried:
+            print(entry.ref, entry.value, entry.reason)
+```
+
+A report larger than the PDU size the association negotiated arrives in
+segments, each delivered to the handler as its own `ClientReport` with the
+same `sequence_number`: `sub_seq_num` counts them from zero,
+`more_segments_follow` is true on every segment but the last, and
+`included` marks only the members of that segment. `sub_seq_num` is `None`
+for an unsegmented report. The client does not reassemble segments.
+
+Against a 0.4.0 server (including the one this package hosts):
+
+- `RcbHandle.dataset` and `ClientReport.dataset_name` read back with the
+  logical device, `"<LD>/<LN>$<name>"`; a write may omit it.
+- Enabling an unreserved URCB reserves it for the writer; writing any other
+  attribute of an unreserved URCB does not reserve it. It stays reserved
+  after `rpt_ena=False` until the holder writes `resv=False` or its
+  association ends. `resv` cannot be written while the URCB is enabled.
+- `gi=True` on a disabled control block fails with `TemporarilyUnavailable`.
+- Writing `rpt_id`, `dataset`, `opt_flds`, `buf_time`, `trigger_options`,
+  `integrity_period`, `purge_buf`, `entry_id` or `resv_tms` of an enabled
+  BRCB (as named in `RcbWriteMask`) fails with `TemporarilyUnavailable`.
+  `conf_rev` counts `DatSet` changes only, and after a purge `entry_id`
+  reads all zeros until the next report is sent.
+- The first report after every enable of a BRCB carries `buffer_overflow`
+  set, whichever `EntryID` the client resynchronised from.
+- A member reports only the triggers its attribute declares (`dchg`,
+  `qchg`, `dupd` in the SCL); an update to the value an attribute already
+  holds sends no data change, only a data update where `dupd` is declared.
+
 ## Control
 
 ```python
@@ -886,11 +982,49 @@ spc = conn.create_control_object(
 )
 spc.set_origin(iec61850.OriginValue(or_cat=3, or_ident=b"py-client"))
 
-if (await spc.select_with_value(True)).success:
+if await spc.select_with_value(True):
     outcome = await spc.operate(True)
-    if not outcome.success:
+    if not outcome:
         print("operate failed:", outcome.add_cause)
+        if outcome.last_appl_error is not None:
+            print(outcome.last_appl_error.error, outcome.last_appl_error.ctl_num)
 ```
+
+`select`, `select_with_value`, `operate` and `cancel` all return a
+`ControlOutcome`, which is truthy exactly when the command succeeded.
+`add_cause` is the `ControlAddCause` of a refusal and `last_appl_error` the
+`LastApplError` the server reported with it (`ctl_obj`, `error`, `or_cat`,
+`or_ident`, `ctl_num`, `add_cause`), or `None` when it sent none. The
+enhanced-security models always report one; a normal-security server may
+not, and a refused normal-security `select` (a read of `SBO`) carries no
+cause at all, so it reads `unknown`. Add cause 24 is
+`ControlAddCause.BLOCKED_BY_COMMAND` (`"blocked-by-command"`);
+`ABORTION_BY_COMMAND` remains an alias.
+
+## GOOSE control blocks
+
+A GOOSE control block is administered over MMS like any other control
+block; publishing and subscribing to the frames themselves is out of scope
+(see the PICS footnote 7).
+
+```python
+gocb = "IED1LD0/LLN0.gcbStatus"          # or "IED1LD0/LLN0$GO$gcbStatus"
+
+values = await conn.get_gocb_values(gocb)
+print(values.go_id, values.dat_set, values.conf_rev, values.dst_address)
+
+await conn.set_gocb_values(gocb, go_id="BayStatus")   # while GoEna is false
+await conn.set_gocb_values(gocb, go_ena=True)
+```
+
+`GoCBValues` carries `go_ena`, `go_id`, `dat_set` (with the logical device),
+`conf_rev`, `nds_com`, `dst_address` (a `PhyComAddress` of `addr`,
+`priority`, `vlan_id`, `app_id`), `min_time_ms`, `max_time_ms` and
+`fixed_offs`; a component the server omits reads `None`.
+`set_gocb_values` writes only the arguments given, one attribute per
+request. A 0.4.0 server refuses `go_id` and `dat_set` with
+`TemporarilyUnavailable` while the block is enabled, and with
+`ObjectAccessDenied` when it presents Edition 2.1.
 
 ## SCL / ICD / CID parser
 
@@ -976,10 +1110,14 @@ asyncio.run(main())
 ```
 
 Configuration setters (`vendor`, `model_name`, `revision`, `max_connections`,
-and the association limits below) must be called before `start()`. Updating
-an unknown path raises `KeyError`; a type mismatch (e.g. pushing
-`update_float32` to a `BOOLEAN` attribute) raises `IedDataAccessError`. Bind
-failures and other lifecycle errors surface as `IedServerError`.
+the association limits below, `set_edition` and `set_write_access_policy`)
+must be called before `start()`. Updating an unknown path raises `KeyError`;
+a type mismatch (e.g. pushing `update_float32` to a `BOOLEAN` attribute)
+raises `IedDataAccessError`. Bind failures and other lifecycle errors
+surface as `IedServerError`. While running, `connection_count` reports the
+open connections, `abort_all_connections()` aborts every association and
+returns how many it marked, and `dynamic_dataset_count()` counts the data
+sets clients have created.
 
 The server bounds what a client can hold open:
 
@@ -1015,6 +1153,69 @@ The bit count has to fit the declared size, as a remote Write must: exactly
 two bits for a `Dbpos`, one to thirteen for a `Quality`. A mismatch raises
 `IedDataAccessError` and leaves the attribute unchanged.
 
+An update raises only the trigger options the attribute declares: a changed
+value raises a data change for `dchg` and a quality change for `qchg`, and
+every update raises a data update for `dupd`. Writing the value an attribute
+already holds sends no data change. The sub-attributes of a constructed
+attribute take its trigger options, so `mag.f` triggers on what `mag`
+declares. A value a client writes raises the same triggers.
+
+### Arrays
+
+An attribute or sub-data object declared with `count` is an array. A client
+reads and writes an element by index (`"LD/LN.DO.da(2)"`); the server
+updates the whole array in one step:
+
+```python
+server.update_array("LD/GGIO1.Arr.stVal", [True, False, True])
+```
+
+`update_array` takes one item per element, in index order; an element of a
+constructed type is a list in model order or a dict keyed by sub-attribute
+name. The shape is checked before any element changes, and the changes go
+out as one batch, so a report control block without a buffer time sends one
+report for the whole array. An `on_read` handler on an array returns a list
+of the same length, and an `on_write` handler on an array receives the whole
+array when a client writes one element.
+
+### Registering what the model declares
+
+Loading SCL or a model spec builds the model; the control blocks it declares
+are served only once they are registered. `register_from_model()` registers
+every data set, report control block instance, GOOSE control block, log
+control block and controllable data object of the model:
+
+```python
+server = iec61850.IedServer.from_scl("plant.cid", ied_name="IED1")
+server.bind("0.0.0.0:102")
+server.register_from_model()        # queued; runs at start()
+async with server:
+    ...
+```
+
+Queued before `start()`, it runs after every explicit `add_dataset` /
+`register_urcb` / `register_brcb` / `register_log_control` / `on_control`
+registration and before the server accepts connections. Called while
+running, it registers at once and returns the counts (`data_sets`, `urcbs`,
+`brcbs`, `gocbs`, `lcbs`, `sgcbs`, `control_objects`). A report control
+block declared with `RptEnabled max="N"` is registered once per instance,
+named `<name>01` to `<name>NN` when indexed. A data set or control block
+registered under the same reference already raises `IedServerError` with
+`reference`; a control object registered by `on_control` keeps its handlers.
+Setting group control blocks are served either way.
+
+### Edition and write access
+
+`set_edition("ed1" | "ed2" | "ed2.1")` selects the edition the server
+presents; `"ed2"` is the default and `"ed1"` behaves as `"ed2"`. The only
+difference is that under `"ed2.1"` a client may not write the `GoID` and
+`DatSet` of a GOOSE control block.
+
+`set_write_access_policy(fc, allow)` allows or refuses remote writes under
+`"DC"`, `"CF"`, `"SP"`, `"SV"`, `"SE"` or `"BL"`; `SP`, `SV` and `SE` are
+allowed by default. A refused write fails with `ObjectAccessDenied` before
+any `on_write` handler runs. `write_access_allowed(fc)` reports the policy.
+
 ### Server-side TLS
 
 `with_tls()` wraps the listener in an IEC 62351-3 TLS acceptor. Only
@@ -1042,9 +1243,10 @@ server.with_tls(
 )
 ```
 
-Defaults: TLS 1.2 - 1.3, IEC 62351-3 cipher whitelist, chain validation
-on, time validation on, session resumption on, no client-cert pinning.
-`min_tls_version` and `max_tls_version` accept `"tls1.2"` / `"tls1.3"`.
+Defaults: TLS 1.2 - 1.3, IEC 62351-3 cipher whitelist, time validation
+on, session resumption on, no client-cert pinning; a client certificate
+chain is always validated against `client_ca_pem`. `min_tls_version` and
+`max_tls_version` accept `"tls1.2"` / `"tls1.3"`.
 
 ### Read / write callbacks
 
@@ -1099,6 +1301,29 @@ Set a `code` attribute on the raised exception to control the reported
 `"ObjectAccessDenied"`, `"ObjectValueInvalid"`, etc. Without `code` the
 server reports `ObjectAccessDenied`.
 
+A handler decides every request that covers its attribute: a read of the
+attribute itself, of a node above it (its data object, its logical node, a
+functional-constraint group), of a node below it, and of a data set holding
+it; a write to the attribute or to any node above or below it. A handler on
+a data object or constructed attribute returns its value as a list in model
+order. The server holds no lock while a handler runs, so it may call the
+`update_*` methods. Pass `with_context=True` to receive the request as
+well:
+
+```python
+def on_read(path: str, ctx: dict) -> object:
+    # ctx: {"path": "GGIO1$ST$Ind1$stVal", "fc": "ST", "conn_id": 3,
+    #       "requested": "GGIO1$ST$Ind1"}
+    return read_io(path)
+
+server.on_read("GenericIO/GGIO1.Ind1.stVal", on_read, with_context=True)
+server.on_write("GenericIO/GGIO1.SetPt1.setVal",
+                lambda path, value, ctx: True, with_context=True)
+```
+
+`path` is the canonical path the handler is registered against and
+`requested` the path the client named.
+
 ### Control callbacks
 
 `on_control` binds the server-side execution of a control object. Address
@@ -1114,8 +1339,15 @@ model the DO uses. Up to three callbacks may be supplied:
   `sbo-enhanced` controls (e.g. wait for synchro-check confirmation).
 
 Each callback receives `(path, ctl_val, action)`. `action` is a dict with
-`ctl_num`, `test`, `synchro_check`, `interlock_check`, `is_select`,
-`ctl_time_ms`, and `origin` (a sub-dict with `or_cat` and `or_ident`).
+`ctl_num`, `test`, `synchro_check`, `interlock_check`, `is_select`, `t`
+(the request timestamp as eight UTC_TIME octets), `conn_id` (the
+association that issued it), and `origin` (a sub-dict with `or_cat` and
+`or_ident`).
+
+Under the normal-security models a failing `operate` is not reported to
+the client, so refuse a command from `check` (or `wait`) instead. The
+server refuses a time-activated operate (an `Oper` with an `operTm`) with
+`NotSupported`.
 
 ```python
 async def operate(path: str, value: bool, action: dict) -> None:
@@ -1141,7 +1373,11 @@ server.on_control(
 `"direct-enhanced"`, `"sbo-enhanced"`. For SBO models the optional
 `sbo_timeout_ms` (default 30000) and `sbo_class` (`"operate-once"` or
 `"operate-many"`, default `"operate-once"`) configure the select-phase
-behavior.
+behavior. `oper_timeout_ms` (default 0, none) ends a command that executes
+for longer with `TimeLimitOver`. A `ctlModel`, `sboTimeout`, `sboClass` or
+`operTimeout` the model declares takes precedence over these arguments, so
+declare the control model in the SCL rather than only passing it here. The
+server maintains `stSeld` itself.
 
 Raise an exception from any callback to reject the command. Set
 `add_cause` on the exception to the variant name (e.g.
@@ -1188,6 +1424,13 @@ wire for unbuffered reports.
 
 Datasets without a URCB are still reachable via `get_data_set_values`.
 
+A report carries only the reasons the control block's `TrgOps` enable, for
+the triggers each member's attribute declares: an SCL attribute without
+`dchg="true"` (or `qchg`, `dupd`) sends no report on that trigger. A data
+object or constructed attribute member is included whole when any attribute
+beneath it triggers. A client reads `DatSet` back as
+`"<LD>/<LN>$<name>"`.
+
 ### Buffered reporting (BRCB)
 
 `register_brcb` mirrors `register_urcb` but binds the dataset to a
@@ -1214,7 +1457,8 @@ the wire for BRCBs (URCBs mask them out). Additional knobs:
 
 - `buffer_capacity` (default `64`) — entry-count ring size; the buffer
   evicts oldest entries when full and surfaces overflow through the
-  `buffer_overflow` field on the next report.
+  `buffer_overflow` field on the next report. The first report after every
+  enable also carries `buffer_overflow` set.
 - `with_resv_tms` (default `True`) — expose the Edition 2+ `ResvTms`
   field for client reservation.
 - `with_owner` (default `False`) — expose the Edition 2+ `Owner` field.
@@ -1229,31 +1473,41 @@ discriminates them.
 `register_log_control` declares a Log Control Block (`$LG$` MMS path).
 Each block backs onto an in-memory journal (`InMemoryLogStorage`), which
 can be unbounded (default) or capped to a fixed entry count (oldest
-entries are evicted on overflow). Clients pull the journal contents over
-MMS `ReadJournal` via `query_journal_by_time` / `query_journal_after_entry`.
+entries are evicted on overflow). Clients name the journal by the block's
+`log_ref` and pull it over MMS `ReadJournal` with `query_journal` /
+`query_journal_all`.
 
 ```python
+server.add_dataset("LLN0$evlogds", ["GenericIO/GGIO1.Ind1.stVal"])
 server.register_log_control(
     "GenericIO/LLN0.lcb01",
     dataset="LLN0$evlogds",
-    trg_ops=["data_changed"],
+    log_ref="IED1GenericIO/LLN0$EventLog",
+    trg_ops=["data_changed", "integrity"],
+    intg_pd_ms=60_000,
     storage_capacity=1000,
 )
 
 async with server:
+    server.update_bool("GenericIO/GGIO1.Ind1.stVal", True)   # logged
     server.log_value(
         "GenericIO/LLN0.lcb01",
-        data_ref="IED1GenericIO/GGIO1$ST$Ind1$stVal",
+        data_ref="IED1GenericIO/GGIO1$ST$Ind2$stVal",
         value=True,
         reason_code=0x02,            # bit 1 = data_changed
     )
 ```
 
-Triggers are explicit: `log_value` writes one entry per call rather than
-auto-tracking `update_*`. `log_value` returns the 8-byte entry id (as an
-`int`) on success, or `None` when the block's `LogEna` is disabled and the
-trigger was silently skipped. Toggle the enable state at runtime with
-`set_log_ena(path, on)`.
+The server records the journal itself: an update of a member of the
+block's data set (registered with `add_dataset` or `register_from_model`)
+writes an entry when the block's `trg_ops` enable a reason the update
+raises — data change, quality change or data update — and integrity writes
+one entry holding the whole data set every `intg_pd_ms`. General
+interrogation writes none. Updates made inside `batch()` write one entry per
+block. `log_value` adds an entry of the application's own, for example for
+a value outside the data set or with a chosen timestamp, and returns its
+8-byte entry id (as an `int`), or `None` when the block's `LogEna` is
+disabled. Toggle the enable state at runtime with `set_log_ena(path, on)`.
 
 ### Setting groups (SGCB)
 
@@ -1290,6 +1544,21 @@ active group without consulting the callback — intended for startup
 state restoration. Calling `register_setting_group_handler` again at
 runtime atomically replaces the previous handler.
 
+The server holds the values of every group. SelectActiveSG loads the
+values of the new group into the FC=SG attributes, SelectEditSG loads the
+edited group into FC=SE, and ConfirmEditSGValues stores FC=SE back into
+the group (and into FC=SG when it is the active one). Read or replace a
+group's value from the application with:
+
+```python
+server.get_setting_group_value("GenericIO/PTOC1.StrVal.setMag.f", 2)
+server.set_setting_group_value("GenericIO/PTOC1.StrVal.setMag.f", 2, 1.25)
+```
+
+Replacing a value of the active group updates the served attribute too; a
+value of another group takes effect when that group is activated. In SCL a
+setting carries one `<Val sGroup="n">` per group.
+
 Clients drive SGCB through the regular write API on the special MMS
 path:
 
@@ -1305,10 +1574,10 @@ When the IED schema is generated in Python — code-driven test rigs,
 dynamic device skeletons, or runtimes that prefer dict-driven
 configuration over XML — `from_model_spec` consumes a declarative
 spec dict that maps onto the same model the SCL parser produces. The
-RCB / LCB / SGCB declarations land in the model and are picked up by
-`start()` exactly as SCL-derived ones would be; every callback and
-`register_*` method works against the same `"<LD>/<LN>.<DO>[.<DA>]*"`
-paths.
+RCB / LCB / SGCB declarations land in the model exactly as SCL-derived ones
+would: the SGCB is served on its own, and `register_from_model()` registers
+the data sets, RCBs and LCBs. Every callback and `register_*` method works
+against the same `"<LD>/<LN>.<DO>[.<DA>]*"` paths.
 
 ```python
 spec = {
@@ -1375,12 +1644,17 @@ go under `"sub_dos"`. The underlying `IedModelBuilder` enforces all
 invariants (LLN0 first, SGCB only on LLN0, dataset entries resolve to
 real LN/DO) and surfaces violations as `ValueError`.
 
-### Atomic batch updates
+### Batch updates
 
 `server.batch()` returns a synchronous context manager that holds the
-server's data-model lock for the duration of the `with` block. Concurrent
-batches raise `RuntimeError` rather than deadlocking, so callers can
-choose to retry or fail fast.
+server's data-model lock for the duration of the `with` block. The
+triggers of the updates made inside it are raised together when the block
+exits: a report control block without a buffer time sends one report, a
+buffered one stores one entry, and a log control block writes one entry.
+Buffer-time expiry and integrity and general-interrogation reports wait
+until the block exits, so keep it short. Client reads are not held back.
+Concurrent batches raise `RuntimeError` rather than deadlocking, so callers
+can choose to retry or fail fast.
 
 ```python
 with server.batch():
@@ -1394,15 +1668,35 @@ with server.batch():
 ```python
 try:
     conn = await iec61850.IedConnection.connect("10.0.0.1:102", timeout_ms=2000)
-except iec61850.IedTimeoutError:
-    ...   # connection timed out
+except iec61850.IedTimeoutError as e:
+    ...   # connection timed out after e.timeout_ms
 except iec61850.IedSessionRefusedError:
     ...   # peer refused the association at the session layer
-except iec61850.IedConnectionError:
-    ...   # TCP / OSI stack failure
+except iec61850.IedTlsError as e:
+    ...   # TLS handshake failed; e.kind says why
+except iec61850.IedConnectionError as e:
+    ...   # TCP / OSI stack failure; e.reason says which
 except iec61850.IedError:
     ...   # catch-all base for any IEC 61850 error
 ```
+
+Each exception carries attributes a caller can branch on; an attribute that
+does not apply reads `None`.
+
+| Exception                | Attributes                                                                                     |
+|--------------------------|------------------------------------------------------------------------------------------------|
+| `IedConnectionError`     | `reason` (`"connection-lost"`, `"released-by-peer"`, `"transport"`, `"associate-failed"`, `"initiate-failed"`), `kind` and `detail` of a transport failure, `code` of a refused Initiate |
+| `IedSessionRefusedError` | `reason_code`, `transport_disconnect`, `provider_reason`                                       |
+| `IedTlsError`            | `kind` (`"verification"`, `"alert_received"`, `"version_unsupported"`, `"cipher_unsupported"`, `"timeout"`, `"io"`, `"other"`), `message` |
+| `IedTimeoutError`        | `timeout_ms`                                                                                   |
+| `IedServiceError`        | `reason` (`"service-error"`, `"reject"`, `"conclude-rejected"`, `"outstanding-limit"`, `"pdu-too-large"`, `"name-list-limit"`, `"name-list-not-advancing"`, `"journal-not-advancing"`), `error_class`, `code`, `reject_type`, `number_deleted`, `pdu_size`, `max_size`, `limit` |
+| `IedDataAccessError`     | `code`, the MMS DataAccessError value                                                          |
+| `IedServerError`         | `reference` of a refused duplicate registration                                                |
+
+`IedSessionRefusedError` and `IedTlsError` derive from
+`IedConnectionError`. `IedTimeoutError` derives from `IedError` only: a
+request, connect or command-termination timeout is not caught by
+`except IedServiceError`.
 
 ## Release notes
 
