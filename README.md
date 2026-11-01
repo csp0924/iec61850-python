@@ -41,7 +41,9 @@ Rust crate.
 
 - TCP connect / disconnect with timeout
 - TLS connect (IEC 62351-3 cipher whitelist, mutual TLS, TLS 1.2 + 1.3,
-  known-peer pinning, CRL, configurable validation knobs)
+  known-peer pinning, CRL, hostname and time validation knobs; the
+  certificate chain is always validated, and a failed handshake raises
+  `IedTlsError` naming its kind)
 - Per-connection tuning: request timeout, max outstanding invocations, local
   max PDU size
 - High-level `Iec61850Client` async context manager wrapping the lifecycle of
@@ -52,7 +54,10 @@ Rust crate.
 - Generic `read` / `write` with array-element and sub-component selection;
   `write` also takes a tagged value dict for types no Python type selects
 - Directory queries: `get_server_directory`, `get_logical_device_directory`,
-  `get_logical_node_directory(AcsiClass)`, `get_data_directory`
+  `get_logical_node_directory(AcsiClass)`, `get_data_directory`; a walk
+  stops past `max_name_list_names` names
+- Server identity and state: `get_server_identity` (MMS Identify) and
+  `get_server_status` (MMS Status)
 - Schema introspection: `get_variable_specification(ref, fc)` (recursive MMS
   type tree) and `get_device_model()` (per-LD named-variable index)
 - Dataset admin: `create_data_set`, `delete_data_set`,
@@ -60,9 +65,15 @@ Rust crate.
 - Connection control: `disconnect` (graceful) and `abort` (rude close —
   drop TCP without sending MMS Conclude)
 - URCB / BRCB reporting: `get_rcb_values`, `set_rcb_values`,
-  `install_report_handler`, `poll_reports`, background `ReportDispatcher`
-- Log service: `query_journal_by_time` and `query_journal_after_entry` for
-  paginating Log Control Block contents
+  `install_report_handler`, `poll_reports`, background `ReportDispatcher`;
+  each report says which members it carries (`included`) and which segment
+  of a segmented report it is
+- Log service: `query_journal(log_ref, JournalQuery)` for one ReadJournal
+  request with any selection, `query_journal_all` to read every page, and
+  the `query_journal_by_time` / `query_journal_after_entry` shorthands; a
+  journal is named by its LogRef
+- GOOSE control block administration over MMS: `get_gocb_values` and
+  `set_gocb_values` (GOOSE frames themselves stay out of scope)
 - SCL / ICD / CID document parser: `load_scl(path)` / `parse_scl(xml)` →
   `Scl` handle exposing IED inventory, the full document as a nested dict,
   and a canonical text summary per IED
@@ -72,23 +83,31 @@ Rust crate.
   authored as XML. Bind, configure (vendor / model name /
   max connections / association timeouts / run-time data set limits), enter
   via `async with`, push value updates with typed
-  `update_*` methods, intercept reads / writes with `on_read` / `on_write`
-  callbacks, serve control commands (SBO / direct, normal / enhanced)
+  `update_*` methods and whole arrays with `update_array`, intercept reads /
+  writes with `on_read` / `on_write` callbacks (optionally with the request
+  context), serve control commands (SBO / direct, normal / enhanced)
   with `on_control` — `operate` and `wait` callbacks may be either sync
-  or `async` — expose URCB / BRCB reporting via `add_dataset` /
-  `register_urcb` / `register_brcb`, host Log Control Blocks via
-  `register_log_control` + `log_value` (in-memory journal backend,
-  `ReadJournal` over MMS), wire Setting Group callbacks per LD with
-  `register_setting_group_handler` + `force_active_setting_group`;
-  atomic multi-attribute updates with `with server.batch():`; terminate
-  TLS at the server with `with_tls()` (same IEC 62351-3 profile as the
-  client, plus client-cert pinning)
+  or `async` — register every data set, report, GOOSE and log control block
+  and control object the model declares with `register_from_model()`, or
+  expose URCB / BRCB reporting via `add_dataset` / `register_urcb` /
+  `register_brcb` and Log Control Blocks via `register_log_control`
+  (in-memory journal recorded from the data set members, `ReadJournal` over
+  MMS, `log_value` for further entries), wire Setting Group callbacks per LD
+  with `register_setting_group_handler` + `force_active_setting_group` and
+  read or replace the values of each group; choose the edition
+  (`set_edition`) and the functional constraints clients may write
+  (`set_write_access_policy`); group updates with `with server.batch():` so
+  they report and log as one batch; terminate TLS at the server with
+  `with_tls()` (same IEC 62351-3 profile as the client, plus client-cert
+  pinning)
 - Control: `select`, `select_with_value`, `operate`, `cancel` across the four
   IEC 61850 control models (`direct-normal` / `direct-enhanced` /
-  `sbo-normal` / `sbo-enhanced`)
+  `sbo-normal` / `sbo-enhanced`), each returning a `ControlOutcome` that
+  carries the add cause and the `LastApplError` the server reported
 - Typed exception hierarchy: `IedError`, `IedConnectionError`,
-  `IedTimeoutError`, `IedDataAccessError`, `IedServiceError`,
-  `IedControlError`, `IedServerError`
+  `IedSessionRefusedError`, `IedTlsError`, `IedTimeoutError`,
+  `IedDataAccessError`, `IedServiceError`, `IedControlError`,
+  `IedServerError`; each carries attributes naming the cause
 - SNTP / NTP client: `query_sntp(addr, timeout_s)` returns an `SntpResponse`
   with server time, clock offset, and round-trip estimate computed per
   RFC 4330 §5
@@ -221,8 +240,10 @@ which carries the full per-service detail.
 | Mutual TLS / pinned peer / CRL |   yes   |   yes   |  yes   |  yes   |
 | Authentication (ACSE password) |    —    |    —    |   —    |   —    |
 
-1. Includes 62351-3 cipher whitelist, `verify_hostname` knob, version
-   pinning, and known-peer profile. Backed by `iec61850-tls`.
+1. Includes 62351-3 cipher whitelist, `verify_hostname` and
+   `time_validation` knobs, version pinning, and known-peer profile; the
+   certificate chain is always validated. A failed client handshake raises
+   `IedTlsError` with its `kind`. Backed by `iec61850-tls`.
 
 ### Server class (§8)
 
@@ -230,6 +251,11 @@ which carries the full per-service detail.
 |------------------------------|:----:|:----:|:------:|:------:|
 | GetServerDirectory           | yes  | yes  |  yes   |  yes   |
 | GetServerCapabilities (Ed.2) |  —   |  —   |   —    |   —    |
+| MMS Identify                 | yes  | yes  |  yes   |  yes   |
+| MMS Status                   | yes  | yes  |  yes   |  yes   |
+
+The hosted server answers Identify with the `vendor`, `model_name` and
+`revision` it is configured with.
 
 ### Logical Device class (§9)
 
@@ -252,9 +278,14 @@ which carries the full per-service detail.
 | SetDataValues                       | yes  | yes (2) |  yes   |  yes   |
 | GetDataDirectory                    | yes  |   yes   |  yes   |  yes   |
 | GetDataDefinition / GetVariableSpec | yes  |   yes   |  yes   |  yes   |
+| Array element access (read / write) | yes  |   yes   |  yes   |  yes   |
 
-2. Server applies the configured `WriteAccessPolicies` (default
-   `SP | SV | SE`) and any registered `on_read` / `on_write` callbacks.
+2. Server applies the write access policy (default `SP | SV | SE`;
+   `set_write_access_policy` also opens `DC`, `CF` and `BL` before
+   `start()`) and any registered `on_read` / `on_write` callbacks, which
+   are asked for reads and writes above and below their own path and can
+   receive the request context. `update_array` updates a whole array
+   attribute as one batch.
 
 `GetDataValues` covers both the single read (`read`) and the batched form
 (`read_multiple`), which carries any set of references in one MMS Read.
@@ -271,8 +302,9 @@ which carries the full per-service detail.
 | List data set names (GetLogicalNodeDirectory DS) | yes | yes | yes | yes |
 | Static (SCL-defined) datasets | yes  | yes (3) |  yes   |  yes   |
 
-3. Server registers static datasets through `add_dataset()`; either bound
-   to a URCB or exposed standalone for `GetDataSetValues`.
+3. Server registers static datasets through `add_dataset()` or, for every
+   data set the model declares, `register_from_model()`; either bound to a
+   control block or exposed standalone for `GetDataSetValues`.
 
 ### Substitution (§13)
 
@@ -285,19 +317,26 @@ which carries the full per-service detail.
 
 | Service                               |  Py-C   |  Py-S   | Rust-C | Rust-S |
 |---------------------------------------|:-------:|:-------:|:------:|:------:|
-| SelectActiveSG / SelectEditSG         | yes (6) | yes (6) |  yes   |  yes   |
-| GetSGCBValues / SetSGCBValues         | yes (6) | yes (6) |  yes   |  yes   |
-| ConfirmEditSGValues                   | yes (6) | yes (6) |  yes   |  yes   |
-| Setting access (FC=SG / FC=SE writes) |   yes   |   yes   |  yes   |  yes   |
+| SelectActiveSG / SelectEditSG         | yes (6) | yes (6) | partial (6) |  yes   |
+| GetSGCBValues / SetSGCBValues         | yes (6) | yes (6) | partial (6) |  yes   |
+| ConfirmEditSGValues                   | yes (6) | yes (6) | partial (6) |  yes   |
+| Setting access (FC=SG / FC=SE writes) |   yes   |   yes   |     yes     |  yes   |
+| Values of every setting group         |   n/a   |   yes   |     n/a     |  yes   |
 
 6. Server-side SGCB is declared via SCL `<SettingControl numOfSGs="N"/>`
    on LN0; runtime ActSG / EditSG / ConfirmEditSG state machine plus
-   reservation timeout are owned by the server. Python applications
-   install per-LD callbacks (`on_act_sg` / `on_edit_sg` /
-   `on_confirm`) through `register_setting_group_handler()`, and
-   can `force_active_setting_group()` on startup. Clients drive SGCB
-   through the existing `write()` API on the special MMS path
-   (e.g. ``write("IED1LD0/LLN0.SGCB.ActSG", FC.SP, 2)``).
+   reservation timeout are owned by the server, which also holds the
+   values of every group: SelectActiveSG loads the group into the FC=SG
+   attributes and ConfirmEditSGValues stores the FC=SE buffer into it.
+   Python applications install per-LD callbacks (`on_act_sg` /
+   `on_edit_sg` / `on_confirm`) through
+   `register_setting_group_handler()`, can `force_active_setting_group()`
+   on startup, and read or replace the value a group holds with
+   `get_setting_group_value()` / `set_setting_group_value()`. Clients,
+   in Python and in Rust alike, drive SGCB through the generic write API
+   on the special MMS path (e.g.
+   ``write("IED1LD0/LLN0.SGCB.ActSG", FC.SP, 2)``); neither has a dedicated
+   setting-group API.
 
 ### Reporting — URCB / BRCB (§17)
 
@@ -307,42 +346,45 @@ which carries the full per-service detail.
 | URCB — Report (TrgOps, OptFlds, BufTm, IntgPd) | yes  |   yes   |  yes   |  yes   |
 | URCB — General Interrogation                   | yes  |   yes   |  yes   |  yes   |
 | BRCB — GetBRCBValues / SetBRCBValues / Report  | yes  | yes (4) |  yes   |  yes   |
+| Segmentation (`SubSeqNum` / `MoreFollows`)     | yes  |   yes   |  yes   |  yes   |
+| Per-member inclusion of a report               | yes  |   yes   |  yes   |  yes   |
+| Instances from the model                       | n/a  |   yes   |  n/a   |  yes   |
 | Background report dispatcher                   | yes  |   n/a   |  yes   |  n/a   |
 
-4. Server BRCB hosting via `register_brcb()` with in-memory ring buffer
-   (entry-count semantics), reconnect resync, and the `update_*` trigger
-   path.
+4. Server BRCB hosting via `register_brcb()` or `register_from_model()`
+   with in-memory ring buffer (entry-count semantics), EntryID resync, and
+   the `update_*` trigger path. The first report after each enable carries
+   `BufOvfl` set.
 
 ### Logging — LCB / Log (§15)
 
-| Service                           | Py-C |  Py-S   | Rust-C | Rust-S |
-|-----------------------------------|:----:|:-------:|:------:|:------:|
-| ReadJournal (by time / by entry)  | yes  | yes (5) |  yes   |  yes   |
-| LCB — GetLCBValues                |  —   |    —    |   —    | partial (12) |
-| LCB — SetLCBValues                |  —   |    —    |   —    |   —    |
-| QueryLogByTime / QueryLogAfter    | yes  | yes (5) |  yes   |  yes   |
-| Log purging                       |  —   |    —    |   —    |   —    |
+| Service                                | Py-C |  Py-S   | Rust-C | Rust-S |
+|----------------------------------------|:----:|:-------:|:------:|:------:|
+| Log (recording on trigger)             | n/a  | yes (5) |  n/a   |  yes   |
+| ReadJournal (every optional field)     | yes  | yes (5) |  yes   |  yes   |
+| ReadJournal pagination (read to end)   | yes  |   yes   |  yes   |  yes   |
+| LCB — GetLCBValues                     |  —   |   yes   |   —    |  yes   |
+| LCB — SetLCBValues                     |  —   |    —    |   —    |   —    |
+| GetLogStatusValues                     |  —   |   yes   |   —    |  yes   |
+| QueryLogByTime / QueryLogAfter         | yes  | yes (5) |  yes   |  yes   |
+| Log purging                            |  —   |    —    |   —    |   —    |
 
-5. Server LCB hosting via `register_log_control()` with an in-memory
-   journal backend (optionally capacity-bounded, evicts oldest on
-   overflow). Triggers are explicit (`log_value`); auto-trigger on
-   `update_*` is not yet wired. `LogEna` toggles at runtime via
-   `set_log_ena`.
+5. Server LCB hosting via `register_log_control()` or
+   `register_from_model()` with an in-memory journal backend (optionally
+   capacity-bounded, evicts oldest on overflow). The server writes an
+   entry whenever a member of the block's data set changes value or
+   quality or is updated, as its `TrgOps` enable, and one entry holding
+   the whole data set every `IntgPd`; general interrogation writes none.
+   `log_value` adds entries of the application's own. `LogEna` toggles at
+   runtime via `set_log_ena`. A journal is named by the block's `LogRef`.
 
-<!-- -->
+### Generic Substation Event — GOOSE / GSE (§18)
 
-12. The Rust server serves `LogEna`, `LogRef`, `DatSet`, `TrgOps` and
-    `IntgPd`, individually or as one structure; the four buffer-cursor
-    attributes (`OldEntrTm` / `NewEntrTm` / `OldEntr` / `NewEntr`) answer
-    `object-access-unsupported`.
-
-### Generic Substation Event — GOOSE / GSE (§18) (7)
-
-| Service                 |     Py-C      |     Py-S      | Rust-C | Rust-S |
-|-------------------------|:-------------:|:-------------:|:------:|:------:|
-| GoCB — Get / Set values | no, by design | no, by design |  yes   |  yes   |
-| GOOSE publish           | no, by design | no, by design |  n/a   |  yes   |
-| GOOSE subscribe         | no, by design | no, by design |  yes   |  n/a   |
+| Service                 |       Py-C        |       Py-S        | Rust-C | Rust-S |
+|-------------------------|:-----------------:|:-----------------:|:------:|:------:|
+| GoCB — Get / Set values |     yes (14)      |     yes (14)      |  yes   |  yes   |
+| GOOSE publish           | no, by design (7) | no, by design (7) |  n/a   |  yes   |
+| GOOSE subscribe         | no, by design (7) | no, by design (7) |  yes   |  n/a   |
 
 7. **By design, not on the Python roadmap.** GOOSE is a hard-real-time L2
    protocol (IEC 61850-8-1; T1 retransmission floor = 4 ms; protection
@@ -351,8 +393,13 @@ which carries the full per-service detail.
    [`iec61850-goose`](https://github.com/csp0924/iec61850-rust/tree/main/crates/iec61850-goose)
    directly — it provides `GoosePublisher` (frame template + retransmission
    state machine), `GooseSubscriber` (smpCnt continuity + Q4), and a
-   typestate `GooseReceiver`. MMS-level `GoCB` administration is also
-   handled there (via `GoCBRegistry` in `iec61850-server`).
+   typestate `GooseReceiver`.
+14. MMS administration of a GOOSE control block, which involves no
+    Ethernet frame. The client reads the nine components with
+    `get_gocb_values` and writes `GoEna`, `GoID` and `DatSet` with
+    `set_gocb_values`. The hosted server serves the GoCBs
+    `register_from_model()` registers; `GoID` and `DatSet` are writable
+    while `GoEna` is false, and read-only under `set_edition("ed2.1")`.
 
 ### Transmission of Sampled Values — SVCB (§19) (8)
 
@@ -383,12 +430,17 @@ which carries the full per-service detail.
 | Select / SelectWithValue  | yes  | yes  |  yes   |  yes   |
 | Operate / Cancel          | yes  | yes  |  yes   |  yes   |
 | Test mode, ctlNum, origin | yes  | yes  |  yes   |  yes   |
-| TimeActivatedOperate      |  —   |  —   |   —    | partial (13) |
-| AddCause feedback         | yes  | yes  |  yes   |  yes   |
+| TimeActivatedOperate      |  —   |  —   |   —    | — (13) |
+| AddCause / LastApplError  | yes  | yes  |  yes   |  yes   |
+| Control settings from the model | n/a | yes | n/a | yes |
+| Operate timeout           | n/a  | yes  |  n/a   |  yes   |
 
-13. The Rust server decodes the timed `Oper` structure and hands `operTm`
-    to the application handler, but does not itself defer execution to the
-    activation time.
+13. The Rust server refuses an `Oper` carrying an `operTm` other than 0
+    with the add cause Not-supported.
+
+A `ctlModel`, `sboTimeout`, `sboClass` or `operTimeout` the model declares
+takes precedence over the arguments of `on_control`; `register_from_model()`
+registers every controllable data object of the model.
 
 ### Time and Time Synchronization (§21)
 
@@ -427,6 +479,24 @@ which carries the full per-service detail.
 | Typed-spec introspection (`TypeSpec`)                   |  yes   | yes  |
 | Code-driven `IedModel` construction                     |  yes   | yes  |
 | Async SNTP / NTP client                                 |  yes   | yes  |
+
+### Not exposed from Python
+
+Beyond GOOSE and Sampled Values frames (footnotes 7 and 8), a few parts of
+the Rust API stay out of this package on purpose:
+
+- Raw Ethernet access and the choice of an L2 backend: they need platform
+  privileges and driver-level setup.
+- `IedServer::tick_log_integrity`: it takes a `std::time::Instant`, which
+  Python cannot supply; the server drives integrity logging from its own
+  timer.
+- `IedServer::lock_data_model`: its guard holds the data-model lock across
+  calls, which deadlocks easily from Python; `batch()` covers grouped
+  updates.
+- `BlockingMmsClient`: the package is async throughout.
+- The internal registries, the reporting engine and the storage traits:
+  they bypass the `update_*` path; the server methods above cover what
+  they do.
 
 ## Quick start
 
