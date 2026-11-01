@@ -254,6 +254,51 @@ async def test_report_entry_of_an_omitted_member_carries_no_reason() -> None:
             await conn.disconnect()
 
 
+async def test_python_hosted_brcb_fires_on_update_bool() -> None:
+    """A BRCB enabled through `get_rcb_values` / `set_rcb_values` reports a
+    Boolean change.
+
+    A BRCB runs its own trigger and tick path, separate from the URCB one.
+    No RptID is passed, so the server defaults it to the MMS path.
+    """
+    s = IedServer.from_scl_str(SERVER_SCL, ied_name="IED1")
+    s.bind("127.0.0.1:0")
+    s.add_dataset("GGIO1$ds1", [IND1_SERVER, ANIN1_SERVER])
+    s.register_brcb(
+        "GenericIO/LLN0.brcb01",
+        dataset="GGIO1$ds1",
+        trg_ops=["data_changed"],
+        opt_flds=["seq_num", "time_stamp", "reason", "data_set"],
+        buf_tm_ms=10,
+    )
+    async with s:
+        conn = await IedConnection.connect(s.bound_addr)
+        try:
+            rcb = await conn.get_rcb_values(BRCB_MMS)
+            assert rcb.is_buffered is True
+            assert rcb.rpt_id == BRCB_MMS
+            rcb.rpt_ena = True
+            await conn.set_rcb_values(rcb, RcbWriteMask.fields("rpt_ena"))
+            await conn.refresh_rcb_values(rcb)
+            assert rcb.rpt_ena is True
+            sink: queue.Queue = queue.Queue()
+            await conn.install_report_handler(
+                BRCB_MMS, lambda r: sink.put(r), rpt_id=BRCB_MMS
+            )
+
+            s.update_bool(IND1_SERVER, True)
+
+            report = await _wait_for_report(conn, sink)
+            assert report is not None, "no BRCB report arrived after update_bool"
+            assert report.rcb_reference == BRCB_MMS
+        finally:
+            try:
+                await conn.uninstall_report_handler(BRCB_MMS)
+            except Exception:
+                pass
+            await conn.disconnect()
+
+
 async def test_brcb_enabled_by_attribute_writes_delivers_a_report() -> None:
     """A BRCB enabled one attribute at a time reports to the enabling client.
 
