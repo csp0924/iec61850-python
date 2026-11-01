@@ -388,6 +388,7 @@ class IedServer:
     model_name: str | None
     revision: str | None
 
+    def set_edition(self, edition: str) -> None: ...
     @property
     def is_running(self) -> bool: ...
     @property

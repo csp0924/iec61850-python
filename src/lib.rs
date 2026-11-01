@@ -61,7 +61,7 @@ use iec61850_scl::raw::{
     SmvOptsBits, TriggerOptionsBits,
 };
 use iec61850_scl::{ResolvedScl as RustResolvedScl, SclParseError as RustSclParseError};
-use iec61850_server::config::IedServerConfig as RustIedServerConfig;
+use iec61850_server::config::{Edition as RustEdition, IedServerConfig as RustIedServerConfig};
 use iec61850_server::connection::ConnectionId as RustConnectionId;
 use iec61850_server::control::handler::{
     OperateFuture as RustOperateFuture, WaitForExecFuture as RustWaitForExecFuture,
@@ -5982,6 +5982,30 @@ impl PyIedServer {
         self.with_pending_config("max_dynamic_datasets_per_association", |config| {
             config.max_dynamic_datasets_per_association = value;
         })
+    }
+
+    /// Select the IEC 61850 edition the server presents: ``"ed1"``,
+    /// ``"ed2"`` (the default) or ``"ed2.1"``.
+    ///
+    /// The only behavior that depends on it is which GOOSE control block
+    /// components a client may write: under ``"ed2.1"`` GoID and DatSet are
+    /// read-only (IEC 61850-8-1 Table 83); under ``"ed2"``, and under
+    /// ``"ed1"``, which behaves as ``"ed2"``, both are writable while the
+    /// control block is disabled (IEC 61850-7-2 Table 42).
+    ///
+    /// Only valid before `start()`; an unknown edition raises `ValueError`.
+    fn set_edition(&self, edition: &str) -> PyResult<()> {
+        let value = match edition {
+            "ed1" => RustEdition::Ed1,
+            "ed2" => RustEdition::Ed2,
+            "ed2.1" => RustEdition::Ed2_1,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "set_edition: '{other}' is not an edition (allowed: ed1, ed2, ed2.1)"
+                )));
+            }
+        };
+        self.with_pending_config("set_edition", |config| config.edition = value)
     }
 
     #[setter]

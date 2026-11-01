@@ -434,3 +434,52 @@ async def test_on_write_without_context_keeps_two_arguments() -> None:
         finally:
             await conn.disconnect()
     assert calls == [(setpoint, 7)]
+
+
+# ── set_edition ─────────────────────────────────────────────────────────────
+
+GOCB_GO_ID = f"{_demo.DOMAIN}/LLN0.gcbStatus.GoID"
+
+
+async def _write_go_id(edition: str | None) -> tuple[bool, str]:
+    """Write the GoID of the model's GoCB under `edition`; return whether the
+    write was accepted and the GoID read back."""
+    server = _demo_server()
+    if edition is not None:
+        server.set_edition(edition)
+    server.register_from_model()
+    async with server:
+        conn = await IedConnection.connect(server.bound_addr)
+        try:
+            try:
+                await conn.write_visible_string(GOCB_GO_ID, "GO", "renamed")
+                accepted = True
+            except IedDataAccessError:
+                accepted = False
+            return accepted, await conn.read_string(GOCB_GO_ID, "GO")
+        finally:
+            await conn.disconnect()
+
+
+async def test_go_id_is_writable_under_the_default_edition() -> None:
+    assert await _write_go_id(None) == (True, "renamed")
+
+
+async def test_go_id_is_writable_under_ed1_and_ed2() -> None:
+    assert await _write_go_id("ed1") == (True, "renamed")
+    assert await _write_go_id("ed2") == (True, "renamed")
+
+
+async def test_go_id_is_read_only_under_ed2_1() -> None:
+    accepted, go_id = await _write_go_id("ed2.1")
+    assert accepted is False
+    assert go_id != "renamed"
+
+
+async def test_set_edition_refuses_an_unknown_edition_and_a_started_server() -> None:
+    server = _demo_server()
+    with pytest.raises(ValueError, match="not an edition"):
+        server.set_edition("ed3")
+    async with server:
+        with pytest.raises(RuntimeError, match="set_edition: cannot reconfigure"):
+            server.set_edition("ed2")
