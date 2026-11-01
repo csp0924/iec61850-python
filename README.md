@@ -562,7 +562,8 @@ certificate outside its validity period (chain validation still applies).
 tls = iec61850.TlsConfig(
     ca_pem=open("ca.pem", "rb").read(),
     # Restrict accepted server certificates to a fixed allow-list
-    # (IEC 62351-3 known-peer profile).
+    # (IEC 62351-3 known-peer profile): the server's leaf certificate must
+    # equal one of these, compared as whole DER certificates.
     allow_only_known_peers=True,
     known_peer_pems=(open("ied1.crt", "rb").read(),),
     # Pin a single TLS version.
@@ -1236,8 +1237,10 @@ server.with_tls(
 ```
 
 Mutual TLS adds a CA bundle for client-chain validation and, optionally,
-a pinned peer list (only certificates whose SPKI matches one of the
-known peers are accepted):
+a pinned peer list (only a client whose leaf certificate is byte for byte
+the DER of one of the known peers is accepted; the whole certificate is
+compared, not its public key, so a renewed certificate has to be added to
+the list):
 
 ```python
 server.with_tls(
