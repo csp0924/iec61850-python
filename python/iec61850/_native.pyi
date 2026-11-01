@@ -421,15 +421,17 @@ class IedServer:
         max_tls_version: str = ...,
     ) -> None: ...
 
-    max_connections: int  # setter only on the Rust side; treated as attribute in stub
-    association_setup_timeout_ms: int  # setter only
-    association_idle_timeout_ms: int | None  # setter only
-    association_send_timeout_ms: int  # setter only
-    max_dynamic_datasets: int  # setter only
-    max_dynamic_datasets_per_association: int  # setter only
-    vendor: str | None
-    model_name: str | None
-    revision: str | None
+    # Write-only settings, assignable before ``start()``; reading one raises
+    # ``AttributeError``, and assigning one after ``start()`` ``RuntimeError``.
+    max_connections: int  # write-only
+    association_setup_timeout_ms: int  # write-only
+    association_idle_timeout_ms: int | None  # write-only
+    association_send_timeout_ms: int  # write-only
+    max_dynamic_datasets: int  # write-only
+    max_dynamic_datasets_per_association: int  # write-only
+    vendor: str | None  # write-only
+    model_name: str | None  # write-only
+    revision: str | None  # write-only
 
     def set_edition(self, edition: str) -> None: ...
     def set_write_access_policy(self, fc: str, allow: bool) -> None: ...
