@@ -31,8 +31,8 @@ def install_switch_handler(server: iec61850.IedServer) -> None:
         )
         server.update_bool(f"{DEMO.srv_switch}.stVal", bool(value))
 
-    # The CID configures SPCSO1 as direct-with-normal-security; the runtime
-    # control model is chosen here and must agree with what the client uses.
+    # A ctlModel the SCL declares takes precedence over `ctl_model`; the CID
+    # declares SPCSO1 direct-with-normal-security, which the client matches.
     server.on_control(DEMO.srv_switch, ctl_model="direct-normal", operate=on_operate)
 
 
