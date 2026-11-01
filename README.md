@@ -2169,9 +2169,28 @@ Tracks iec61850-rust v0.4.0.
   and `ControlObjectClient` takes its settings through its setters. Drop the
   imports.
 
+  A value written as an `MmsValue` is written as a native or tagged value:
+
+  | 0.15                           | 0.16                                  |
+  |--------------------------------|---------------------------------------|
+  | `MmsValue.structure(...)`      | `{"type": "structure", "value": [...]}` |
+  | `MmsValue.array(...)`          | a `list`                              |
+  | `MmsValue.octet_string(b)`     | `bytes`                               |
+
+  Each `ControlParams` field has a setter or an argument of its own:
+
+  | `ControlParams` field           | 0.16                                                    |
+  |---------------------------------|---------------------------------------------------------|
+  | `ctl_val`                       | the argument of `operate(value)`                        |
+  | `test`                          | `set_test(True)`                                        |
+  | `check_synchrocheck`            | `set_synchro_check(True)`                               |
+  | `check_interlock`               | `set_interlock_check(True)`                             |
+  | `origin_orcat`, `origin_orident`| `set_origin(OriginValue(or_cat=..., or_ident=...))`     |
+  | `operate_time`                  | no replacement: a 0.4.0 server refuses an `Oper` carrying an `operTm` with `NotSupported` |
+
   ```python
   # 0.15
-  ctl.operate(iec61850.ControlParams(ctl_val=True, test=True))  # never accepted
+  await ctl.operate(iec61850.ControlParams(ctl_val=True, test=True))  # never accepted
   # 0.16
   ctl.set_test(True)
   await ctl.operate(True)
@@ -2179,7 +2198,9 @@ Tracks iec61850-rust v0.4.0.
 
 - `InclusionReason.application_trigger` is removed. It was never set: the
   client decodes data change, quality change, data update, integrity and
-  general interrogation. Drop the reads.
+  general interrogation. The ReasonCode bit it stood for, bit 6, is not used
+  for reports by IEC 61850-8-1, so no report carries it and no capability is
+  lost. Drop the reads.
 
 - A TLS handshake that stalls past `timeout_ms` raises `IedTlsError` with
   `kind == "timeout"` (a subclass of `IedConnectionError`) instead of
@@ -2191,6 +2212,7 @@ Tracks iec61850-rust v0.4.0.
   except (iec61850.IedTimeoutError, iec61850.IedTlsError) as e:
       ...
   ```
+
 - `on_confirm` can refuse a confirmation. In 0.15 its return value was ignored
   and an exception was only reported, so the commit always went ahead. Now
   `False`, a return value other than `None` or a bool, or an exception refuses
@@ -2256,7 +2278,6 @@ Tracks iec61850-rust v0.4.0.
   `ValueError`.
 - `AcsiClass.LOG_CONTROL` (`"LCB"`) lists the log control blocks of a logical
   node; `AcsiClass.LOG` lists its logs (journals).
-
 - `IedServer.abort_connection(conn_id)` aborts the one association named by
   the `conn_id` the read, write and control callbacks receive. That connection
   sends an ACSE A-ABORT and closes, possibly after the call returns; every
@@ -2289,7 +2310,11 @@ Tracks iec61850-rust v0.4.0.
 - `connect` and `connect_tls` honour a `timeout_ms` above 10 s. The attempt
   used to end after 10 s with `timeout_ms == 10000`, and a shorter deadline
   raised `IedTimeoutError` with `timeout_ms` unset; it now carries the value
-  given.
+  given. `timeout_ms` now bounds the TCP connection, the TLS handshake and the
+  COTP handshake only, no longer the Session, ACSE and MMS Initiate exchange
+  that follows, which `request_timeout_ms` bounds (5000 ms when not given): a
+  peer that answers COTP but not the session can hold
+  `connect(timeout_ms=2000)` for about 5 s.
 
 #### Changed behavior (from iec61850-rust 0.4.0)
 
