@@ -3346,6 +3346,8 @@ enum PendingHandler {
     Brcb(PendingBrcb),
     LogControl(PendingLogControl),
     SettingGroup(PendingSettingGroupHandler),
+    /// Queued `register_from_model`.
+    FromModel,
 }
 
 /// Queued `on_control` registration.
@@ -3589,6 +3591,7 @@ async fn server_do_start(
     let mut pending_brcbs: Vec<PendingBrcb> = Vec::new();
     let mut pending_lcbs: Vec<PendingLogControl> = Vec::new();
     let mut pending_sgcb_handlers: Vec<PendingSettingGroupHandler> = Vec::new();
+    let mut from_model = false;
     for entry in pending {
         match entry {
             PendingHandler::Read {
@@ -3626,6 +3629,7 @@ async fn server_do_start(
             PendingHandler::Brcb(brcb) => pending_brcbs.push(brcb),
             PendingHandler::LogControl(plcb) => pending_lcbs.push(plcb),
             PendingHandler::SettingGroup(psg) => pending_sgcb_handlers.push(psg),
+            PendingHandler::FromModel => from_model = true,
         }
     }
 
@@ -3700,6 +3704,14 @@ async fn server_do_start(
                     "start: register_setting_group_handler: LD '{user_path}' has no SGCB"
                 ))
             })?;
+    }
+
+    // The model's control blocks go in after every explicit registration, so
+    // a block registered by hand under a reference the model also declares
+    // fails the start with `AlreadyRegistered`, and a control object given
+    // handlers by `on_control` keeps them.
+    if from_model {
+        server_arc.register_from_model().map_err(map_server_error)?;
     }
 
     let handle = server_arc.start().await.map_err(map_server_error)?;
@@ -5594,8 +5606,9 @@ impl PyIedServer {
     /// ``{"type": "bit_string", "padding": 3, "data": b"..."}``,
     /// ``{"type": "default"}``. Omit `value` to default to the type's zero.
     ///
-    /// RCB / LCB / SGCB declared here land in the model and are picked up by
-    /// `start()` exactly as their SCL-driven counterparts would be. Every
+    /// RCB / LCB / SGCB declared here land in the model exactly as their
+    /// SCL-driven counterparts would: the SGCB is served on its own, and
+    /// `register_from_model()` registers the data sets, RCBs and LCBs. Every
     /// register_* method works against the same `"LD/LN.DO[.DA]*"` paths as
     /// for an SCL-built model.
     #[classmethod]
@@ -6152,6 +6165,73 @@ impl PyIedServer {
                 "add_dataset: must be called before start()",
             )),
         }
+    }
+
+    /// Register every control block the model declares.
+    ///
+    /// Registers, for each logical node, each data set (as
+    /// ``"<LN>$<name>"``), each instance of each report control block (named
+    /// ``<name>01`` to ``<name>NN`` when the block is indexed, each with its
+    /// own state and, when buffered, its own buffer), each GOOSE control
+    /// block, each log control block (writing to an in-memory log), and each
+    /// data object whose ``ctlModel`` is other than status-only. Nothing the
+    /// model declares is registered unless this is called; the setting group
+    /// control blocks are served either way.
+    ///
+    /// Before `start()` the call is queued and runs at `start()`, after
+    /// every queued ``add_dataset`` / ``register_urcb`` / ``register_brcb`` /
+    /// ``register_log_control`` / ``on_control`` registration and before the
+    /// server accepts connections; it then returns ``None`` and a failure is
+    /// raised by `start()`. While the server is running the call registers at
+    /// once and returns how many items of each kind it found, as a dict with
+    /// the keys ``data_sets``, ``urcbs``, ``brcbs``, ``gocbs``, ``lcbs``,
+    /// ``sgcbs`` and ``control_objects``.
+    ///
+    /// A data set, report, GOOSE or log control block of the model that is
+    /// already registered under the same reference, by an explicit
+    /// registration or an earlier call, raises `IedServerError` whose
+    /// ``reference`` names it, and nothing is registered. A control object
+    /// already registered, by ``on_control`` or an earlier call, keeps its
+    /// handlers and is not counted in ``control_objects``; ``on_control``
+    /// called afterwards replaces the entry this call registered.
+    ///
+    /// Raises `RuntimeError` when a call is already queued or the server has
+    /// been stopped.
+    fn register_from_model<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let mut state = self.state.lock().unwrap();
+        let server = match &mut *state {
+            ServerState::NotStarted {
+                pending_handlers, ..
+            } => {
+                if pending_handlers
+                    .iter()
+                    .any(|h| matches!(h, PendingHandler::FromModel))
+                {
+                    return Err(PyRuntimeError::new_err(
+                        "register_from_model: already queued for start()",
+                    ));
+                }
+                pending_handlers.push(PendingHandler::FromModel);
+                return Ok(None);
+            }
+            ServerState::Running { server, .. } => Arc::clone(server),
+            ServerState::Stopped => {
+                return Err(PyRuntimeError::new_err(
+                    "register_from_model: server has been stopped",
+                ));
+            }
+        };
+        drop(state);
+        let summary = server.register_from_model().map_err(map_server_error)?;
+        let dict = PyDict::new(py);
+        dict.set_item("data_sets", summary.data_sets)?;
+        dict.set_item("urcbs", summary.urcbs)?;
+        dict.set_item("brcbs", summary.brcbs)?;
+        dict.set_item("gocbs", summary.gocbs)?;
+        dict.set_item("lcbs", summary.lcbs)?;
+        dict.set_item("sgcbs", summary.sgcbs)?;
+        dict.set_item("control_objects", summary.control_objects)?;
+        Ok(Some(dict))
     }
 
     /// Register an Unbuffered Report Control Block (URCB).
