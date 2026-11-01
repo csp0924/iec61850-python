@@ -262,7 +262,8 @@ class IedConnection:
     # Directory / model browsing
     def get_server_directory(self) -> Awaitable[list[str]]: ...
     def get_logical_device_directory(self, ld_name: str) -> Awaitable[list[str]]: ...
-    # `class_token` is an ACSI class spelling: DO, DS, RP, BR, LG, GO, SG.
+    # `class_token` is an ACSI class spelling: DO, DS, RP, BR, LG (logs),
+    # LCB (log control blocks), GO, SG.
     def get_logical_node_directory(
         self, ln_ref: str, class_token: str
     ) -> Awaitable[list[str]]: ...

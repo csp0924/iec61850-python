@@ -1891,6 +1891,8 @@ Tracks iec61850-rust v0.4.0.
   `True` refuses a client that presents no certificate (by default such a
   client is admitted); without a `client_ca_pem`, `start()` raises
   `ValueError`.
+- `AcsiClass.LOG_CONTROL` (`"LCB"`) lists the log control blocks of a logical
+  node; `AcsiClass.LOG` lists its logs (journals).
 
 #### Changed behavior (from iec61850-rust 0.4.0)
 

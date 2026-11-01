@@ -654,6 +654,11 @@ class IedConnection:
     async def get_logical_node_directory(
         self, ln_ref: str, cls: AcsiClass
     ) -> list[str]:
+        """Return the names of one ACSI class of objects in a logical node.
+
+        ``ln_ref`` is ``"<LD>/<LN>"``. ``AcsiClass.LOG`` lists the logs
+        (journals) and ``AcsiClass.LOG_CONTROL`` the log control blocks.
+        """
         return await self._native_conn.get_logical_node_directory(ln_ref, cls)
 
     async def get_data_directory(self, data_ref: str) -> list[str]:

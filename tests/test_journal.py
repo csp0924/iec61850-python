@@ -304,3 +304,21 @@ def test_journal_query_to_native_round_trips_fields() -> None:
         "variables": ["a", "b"],
         "after_entry": (10, b"\x00" * 7 + b"\x02"),
     }
+
+
+async def test_logical_node_directory_lists_log_control_blocks_and_logs_apart(
+    journal_server: str,
+) -> None:
+    """`AcsiClass.LOG_CONTROL` lists the LCBs of a logical node and
+    `AcsiClass.LOG` its journals."""
+    conn = await iec61850.IedConnection.connect(journal_server)
+    try:
+        lln0 = f"{_demo.DOMAIN}/LLN0"
+        lcbs = await conn.get_logical_node_directory(lln0, iec61850.AcsiClass.LOG_CONTROL)
+        logs = await conn.get_logical_node_directory(lln0, iec61850.AcsiClass.LOG)
+        assert "evlog" in lcbs
+        assert "GeneralLog" in logs
+        assert "evlog" not in logs
+        assert "GeneralLog" not in lcbs
+    finally:
+        await conn.disconnect()

@@ -527,6 +527,7 @@ fn parse_acsi_class(token: &str) -> PyResult<RustAcsiClass> {
         "GO" => Ok(RustAcsiClass::GoCb),
         "SG" => Ok(RustAcsiClass::Sgcb),
         "LG" => Ok(RustAcsiClass::Log),
+        "LCB" => Ok(RustAcsiClass::Lcb),
         "CO" => Err(PyValueError::new_err(
             "AcsiClass.CONTROL is not valid for directory queries; \
              use IedConnection.create_control_object() instead"
