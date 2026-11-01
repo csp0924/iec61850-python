@@ -1633,8 +1633,9 @@ async with server:
     ...
 ```
 
-`type` accepts every IEC 61850-7-3 spelling (`"Boolean"`, `"Int32"`,
-`"Float32"`, `"Enumerated"`, `"Timestamp"`, `"Quality"`, …); sized
+`type` accepts every IEC 61850-7-3 spelling (`"Boolean"`, `"Int24"`,
+`"Int32"`, `"Float32"`, `"Enumerated"`, `"Timestamp"`, `"Quality"`,
+`"SvOptFlds"`, `"LogOptFlds"`, …); sized
 variants use the object form `{"type": "OctetString", "max_len": 64}`.
 `value` is a tagged dict (`{"type": "int", "value": 1}`, `{"type":
 "bit_string", "padding": 3, "data": b"\x00\x00"}`, …) or
@@ -1857,7 +1858,10 @@ Tracks iec61850-rust v0.4.0.
   context (`path`, `fc`, `conn_id`, `requested`).
 - `on_control` takes `oper_timeout_ms`.
 - Raw SCL type dictionaries carry `count` and `count_ref` for DA, BDA and
-  SDO declarations.
+  SDO declarations, and a report control dictionary carries `indexed`.
+- `from_model_spec` accepts the attribute types `Int24`, `SvOptFlds` and
+  `LogOptFlds`, and a report control block in a spec takes `indexed` and
+  `max_instances` (not indexed unless asked, so its name is kept).
 
 #### Changed behavior (from iec61850-rust 0.4.0)
 
