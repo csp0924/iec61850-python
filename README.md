@@ -721,6 +721,20 @@ await conn.write_bit_string("LD/XCBR1.PosSet.setVal", iec61850.FC.SP, b"\x80", 6
 data, padding = await conn.read_bit_string("LD/XCBR1.Pos.stVal", iec61850.FC.ST)
 ```
 
+A structure is written as `{"type": "structure", "value": [...]}`: its
+components in order, each a plain value or a tagged dict, so structures nest.
+A structure read back, or handed to a server callback, is a list of its
+components.
+
+```python
+# AnalogueValue with its f component only.
+await conn.write(
+    "LD/GGIO1.AnOut1.setMag",
+    iec61850.FC.SP,
+    {"type": "structure", "value": [{"type": "float32", "value": 1.5}]},
+)
+```
+
 Array elements and sub-components are addressed with keyword arguments:
 
 ```python
@@ -1231,10 +1245,11 @@ A hosted server raises these exceptions:
 | `IedServerError`     | a model or registration the server refuses at `start()` or `register_from_model()`, such as a duplicate data set or control block (`reference` names it) |
 | `SclError`           | an SCL document `from_scl` cannot parse or resolve                                         |
 
-While running, `connection_count` reports the
-open connections, `abort_all_connections()` aborts every association and
-returns how many it marked, and `dynamic_dataset_count()` counts the data
-sets clients have created.
+While running, `connection_count` reports the open connections,
+`abort_connection(conn_id)` aborts the one association a callback's `conn_id`
+names, `abort_all_connections()` aborts every association and returns how many
+it marked, and `dynamic_dataset_count()` counts the data sets clients have
+created.
 
 The server bounds what a client can hold open:
 
@@ -1659,14 +1674,21 @@ A Setting Group Control Block is declared in SCL on `<LN0>`:
 
 The server tracks ActSG / EditSG / ConfirmEditSG state, enforces the
 single-client edit-session lock, and times out abandoned reservations.
-Python applications opt into the three veto / commit points per LD:
+Python applications opt into the three veto / commit points per LD.
+`on_act_sg(new_sg, conn_id)`, `on_edit_sg(new_sg, conn_id)` and
+`on_confirm(edit_sg, conn_id)` all return `bool | None`. `None` or `True`
+accepts the request. `False`, any other return value, or a raised exception
+refuses it with ObjectAccessDenied: the client's write raises
+`IedDataAccessError` with `code == 3`. A refused confirmation commits nothing
+and leaves the edit session open. `on_confirm` runs before the staged FC=SE
+values are committed, so it is where an application persists them.
 
 ```python
 def on_act_sg(new_sg: int, conn_id: int) -> bool:
     return new_sg in allowed_sgs        # return False → ObjectAccessDenied
 
 def on_confirm(edit_sg: int, conn_id: int) -> None:
-    persist_pending_settings(edit_sg)   # commit FC=SE staging buffer
+    persist_pending_settings(edit_sg)   # None accepts; False refuses
 
 server.register_setting_group_handler(
     "GenericIO",
@@ -1873,6 +1895,17 @@ request, connect or command-termination timeout is not caught by
 `except IedServiceError`. A connection that drops after it was established
 raises `IedConnectionError` (`reason` `"connection-lost"`,
 `"released-by-peer"` or `"transport"`), not `IedServiceError`.
+`reason == "transport"` is an I/O failure other than a close, such as a
+refused connection; a connection the peer resets or closes is
+`"connection-lost"`.
+
+`timeout_ms` of `connect` and `connect_tls` bounds the TCP connection, the TLS
+handshake (`connect_tls`) and the COTP handshake together. Running out of it
+raises `IedTimeoutError` whose `timeout_ms` is the value given; running out of
+it during the TLS handshake raises `IedTlsError` with `kind == "timeout"`. The
+Session, ACSE and MMS Initiate exchange that follows is bounded by
+`request_timeout_ms` (5000 ms when not given), whose expiry raises
+`IedTimeoutError` carrying that value.
 
 ## Release notes
 
@@ -2064,6 +2097,32 @@ Tracks iec61850-rust v0.4.0.
   client decodes data change, quality change, data update, integrity and
   general interrogation. Drop the reads.
 
+- A TLS handshake that stalls past `timeout_ms` raises `IedTlsError` with
+  `kind == "timeout"` (a subclass of `IedConnectionError`) instead of
+  `IedTimeoutError`. Catch both around `connect_tls`:
+
+  ```python
+  try:
+      conn = await IedConnection.connect_tls(addr, tls, "ied1", timeout_ms=3000)
+  except (iec61850.IedTimeoutError, iec61850.IedTlsError) as e:
+      ...
+  ```
+- `on_confirm` can refuse a confirmation. In 0.15 its return value was ignored
+  and an exception was only reported, so the commit always went ahead. Now
+  `False`, a return value other than `None` or a bool, or an exception refuses
+  the ConfirmEditSGValues with ObjectAccessDenied. A callback that raised to
+  report a problem but still wants the commit must catch it, and one that
+  returned a truthy non-bool must return `True` or `None`:
+
+  ```python
+  def on_confirm(edit_sg: int, conn_id: int) -> None:
+      try:
+          persist(edit_sg)
+      except OSError:
+          log.exception("persisting setting group %d failed", edit_sg)
+      # returning None accepts the confirmation
+  ```
+
 #### Added
 
 - `IedConnection.get_server_identity()` (MMS Identify) returns a
@@ -2113,6 +2172,28 @@ Tracks iec61850-rust v0.4.0.
   `ValueError`.
 - `AcsiClass.LOG_CONTROL` (`"LCB"`) lists the log control blocks of a logical
   node; `AcsiClass.LOG` lists its logs (journals).
+
+- `IedServer.abort_connection(conn_id)` aborts the one association named by
+  the `conn_id` the read, write and control callbacks receive. That connection
+  sends an ACSE A-ABORT and closes, possibly after the call returns; every
+  other association stays open. An id naming no open association is ignored.
+  Raises `RuntimeError` when the server is not running.
+- Tagged value `{"type": "structure", "value": [...]}`: the components in
+  order, each a plain value or a tagged dict, so structures nest. `write`,
+  `select_with_value`, `operate` and `cancel` accept it; an APC sends its
+  AnalogueValue `ctlVal` as
+  `{"type": "structure", "value": [{"type": "float32", "value": 1.5}]}`.
+  A server control callback receives a structure as a list of its components.
+- `SclError.kind` reads `"UnresolvedDataSetReference"` for a control block
+  whose `datSet` names no data set of its logical node, which the SCL reader
+  refuses.
+
+#### Fixed
+
+- `connect` and `connect_tls` honour a `timeout_ms` above 10 s. The attempt
+  used to end after 10 s with `timeout_ms == 10000`, and a shorter deadline
+  raised `IedTimeoutError` with `timeout_ms` unset; it now carries the value
+  given.
 
 #### Changed behavior (from iec61850-rust 0.4.0)
 
