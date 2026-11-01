@@ -12,8 +12,10 @@ import _demo
 from iec61850 import (
     FC,
     ControlModel,
+    DataSetMember,
     IedConnection,
     IedDataAccessError,
+    IedError,
     IedServer,
     IedServerError,
     RcbWriteMask,
@@ -671,3 +673,66 @@ async def test_write_access_policy_refusing_sp_blocks_client_writes() -> None:
             await conn.disconnect()
         with pytest.raises(RuntimeError, match="cannot reconfigure after start"):
             server.set_write_access_policy("SP", True)
+
+
+# ── abort_all_connections / dynamic_dataset_count ───────────────────────────
+
+
+async def _until(predicate, timeout_s: float = 3.0) -> bool:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+    while loop.time() < deadline:
+        if predicate():
+            return True
+        await asyncio.sleep(0.02)
+    return predicate()
+
+
+async def test_abort_all_connections_closes_every_association() -> None:
+    server = _demo_server()
+    async with server:
+        assert server.abort_all_connections() == 0
+        first = await IedConnection.connect(server.bound_addr)
+        second = await IedConnection.connect(server.bound_addr)
+        assert server.connection_count == 2
+        assert server.abort_all_connections() == 2
+        assert await _until(lambda: server.connection_count == 0)
+        with pytest.raises(IedError):
+            await first.read_bool(_demo.IND1, FC.ST)
+        # The server keeps accepting new associations.
+        third = await IedConnection.connect(server.bound_addr)
+        try:
+            await third.read_bool(_demo.IND1, FC.ST)
+        finally:
+            await third.disconnect()
+        for conn in (first, second):
+            try:
+                await conn.abort()
+            except IedError:
+                pass
+
+
+async def test_dynamic_dataset_count_follows_client_data_sets() -> None:
+    server = _demo_server()
+    _demo.wire_control_blocks(server)
+    ds_ref = f"{_demo.DOMAIN}/LLN0.ds_dyn"
+    async with server:
+        assert server.dynamic_dataset_count() == 0
+        conn = await IedConnection.connect(server.bound_addr)
+        try:
+            await conn.create_data_set(
+                ds_ref, [DataSetMember(object_ref=_demo.IND1, fc=FC.ST)]
+            )
+            assert server.dynamic_dataset_count() == 1
+            assert await conn.delete_data_set(ds_ref) is True
+            assert server.dynamic_dataset_count() == 0
+        finally:
+            await conn.disconnect()
+
+
+def test_abort_and_dynamic_count_require_a_running_server() -> None:
+    server = _demo_server()
+    with pytest.raises(RuntimeError, match="not running"):
+        server.abort_all_connections()
+    with pytest.raises(RuntimeError, match="not running"):
+        server.dynamic_dataset_count()

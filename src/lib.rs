@@ -6169,6 +6169,34 @@ impl PyIedServer {
         }
     }
 
+    /// Abort every open association and return how many were marked.
+    ///
+    /// Each connection sends an ACSE A-ABORT and closes its socket on the
+    /// next turn of its loop, so a connection may still be open, and
+    /// counted by `connection_count`, when this returns. Raises
+    /// `RuntimeError` when the server is not running.
+    fn abort_all_connections(&self) -> PyResult<usize> {
+        match &*self.state.lock().unwrap() {
+            ServerState::Running { server, .. } => Ok(server.abort_all_connections()),
+            _ => Err(PyRuntimeError::new_err(
+                "abort_all_connections: server is not running",
+            )),
+        }
+    }
+
+    /// Number of data sets clients have created at run time and not yet
+    /// deleted, across all associations. A data set registered by the
+    /// application is not counted. Raises `RuntimeError` when the server is
+    /// not running.
+    fn dynamic_dataset_count(&self) -> PyResult<usize> {
+        match &*self.state.lock().unwrap() {
+            ServerState::Running { server, .. } => Ok(server.dynamic_dataset_count()),
+            _ => Err(PyRuntimeError::new_err(
+                "dynamic_dataset_count: server is not running",
+            )),
+        }
+    }
+
     /// Bind the listener and start the accept loop. Coroutine resolves once
     /// the server is ready to accept connections.
     fn start<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
