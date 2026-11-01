@@ -516,6 +516,10 @@ the Rust API stay out of this package on purpose:
   calls, which deadlocks easily from Python; `batch()` covers grouped
   updates.
 - `BlockingMmsClient`: the package is async throughout.
+- Building GOOSE or Sampled Values publisher settings from the model
+  (`CommParameters::from_address`, `SvPublisherBuilder::with_address`): they
+  configure frame publishing, which stays out of the package (footnotes 7
+  and 8); `gse_address` and `smv_address` read the addresses.
 - The internal registries, the reporting engine and the storage traits:
   they bypass the `update_*` path; the server methods above cover what
   they do.
@@ -1167,10 +1171,14 @@ request. A 0.4.0 server refuses `go_id` and `dat_set` with
 `TemporarilyUnavailable` while the block is enabled, and with
 `ObjectAccessDenied` when it presents Edition 2.1.
 
-A `dst_address.addr` of six zero octets means the block has no destination:
-a server registers a GOOSE control block whose SCL declares no `<GSE>` (or a
-`<GSE>` without a `MAC-Address`) disabled, and refuses to enable it with
-`TemporarilyUnavailable`.
+A `dst_address.addr` of six zero octets means the block has no destination.
+When the SCL holds a connected access point of the IED (a system
+configuration), a server registers a GOOSE control block that has no `<GSE>`
+(or a `<GSE>` without a `MAC-Address`) disabled, with that destination, and
+refuses to enable it with `TemporarilyUnavailable`. Without a
+`<Communication>` section for the IED, as in an ICD or a model spec, the block
+keeps the default destination `01-0C-CD-01-00-00`, APPID 0, and can be
+enabled.
 
 ## SCL / ICD / CID parser
 
@@ -1356,8 +1364,9 @@ server.smv_address("LD0", "MSVCB01")            # an <SMV> address, or None
 
 Each address carries every `<P>` under `parameters` (type to text) and the
 typed `mac_address` (6 bytes), `app_id`, `vlan_id`, `vlan_priority` and `ip`,
-`None` when absent. `register_from_model()` publishes a GOOSE control block to
-its `<GSE>` address with its MinTime and MaxTime. The section is validated
+`None` when absent. `register_from_model()` sets the `DstAddress`, `MinTime`
+and `MaxTime` of a GOOSE control block from its `<GSE>`; a server hosted from
+Python sends no GOOSE frames (footnote 7). The section is validated
 when the SCL is read: a malformed `<P>` value or a reference to an access
 point or control block that does not exist raises `SclError`.
 
@@ -2080,10 +2089,12 @@ Tracks iec61850-rust v0.4.0.
   | A request times out                                  | `IedServiceError`    | `IedTimeoutError`                                       |
   | A connect times out in the TCP or COTP stage         | `IedConnectionError` | `IedTimeoutError`                                       |
   | An established connection is lost, released by the peer, or fails in transport | `IedServiceError` | `IedConnectionError` with `reason` `"connection-lost"`, `"released-by-peer"` or `"transport"` |
+  | The peer refuses the association for the calling identity or the credentials | `IedSessionRefusedError` | `IedAuthenticationError` (a subclass of `IedConnectionError`, not of `IedSessionRefusedError`) |
 
   `except IedServiceError` no longer catches a request timeout or a lost
-  connection, and `except IedConnectionError` around `connect` no longer
-  catches a connect timeout. Catch the classes together, or branch on
+  connection, `except IedConnectionError` around `connect` no longer
+  catches a connect timeout, and `except IedSessionRefusedError` no longer
+  catches an authentication refusal. Catch the classes together, or branch on
   `reason`:
 
   ```python
@@ -2378,9 +2389,11 @@ Tracks iec61850-rust v0.4.0.
   written concurrently whole or not at all.
 - A GoCB `DatSet` reads as `"<LD>/LLN0$<name>"`.
 - A GOOSE control block registered from the model takes `DstAddress`,
-  `MinTime` and `MaxTime` from its SCL `<GSE>`; one without a `<GSE>` (or
-  without a `MAC-Address`) is disabled, reads a destination of six zero
-  octets, and cannot be enabled.
+  `MinTime` and `MaxTime` from its SCL `<GSE>`. When the SCL holds a
+  connected access point of the IED, one without a `<GSE>` (or without a
+  `MAC-Address`) is disabled, reads a destination of six zero octets, and
+  cannot be enabled; without a `<Communication>` section it keeps the
+  default destination and can be enabled.
 - The SCL `<Communication>` section is validated when it is read, and
   `Scl.summary()` lists its connected access points and GSE / SMV addresses.
 - A client refused at Initiate raises `IedSessionRefusedError`; one refused

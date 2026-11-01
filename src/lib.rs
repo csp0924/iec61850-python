@@ -6915,11 +6915,16 @@ impl PyIedServer {
     /// ``vlan_priority``, ``ip`` and ``min_time_ms`` / ``max_time_ms``; a
     /// value the section leaves out is ``None``.
     ///
-    /// `register_from_model` publishes a GOOSE control block to this
-    /// address with these retransmission times. A control block without one,
-    /// or whose address has no ``MAC-Address``, is registered disabled: its
-    /// ``DstAddress.Addr`` reads as six zero octets and enabling it is
-    /// refused with temporarily-unavailable.
+    /// `register_from_model` sets the ``DstAddress``, ``MinTime`` and
+    /// ``MaxTime`` of the GOOSE control block from this address; the server
+    /// sends no GOOSE frames itself. When the model holds a connected access
+    /// point of its IED (a system configuration), a control block without a
+    /// ``<GSE>``, or whose address has no ``MAC-Address``, is registered
+    /// disabled: its ``DstAddress.Addr`` reads as six zero octets and
+    /// enabling it is refused with temporarily-unavailable. Without a
+    /// ``<Communication>`` section for the IED, such a block keeps the
+    /// default destination (``01-0C-CD-01-00-00``, APPID 0) and can be
+    /// enabled.
     fn gse_address<'py>(
         &self,
         py: Python<'py>,

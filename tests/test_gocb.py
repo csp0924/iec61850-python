@@ -205,8 +205,9 @@ def test_gocb_values_from_native() -> None:
 
 
 async def test_a_gocb_without_gse_addressing_is_registered_disabled() -> None:
-    """Without a <GSE> for it the block cannot publish: its destination reads
-    as six zero octets and enabling it is refused."""
+    """In a system configuration, which holds the IED's connected access
+    point, a block without a <GSE> has no destination: it reads as six zero
+    octets and enabling it is refused."""
     cid = _demo.DEMO_CID.read_text(encoding="utf-8")
     start = cid.index('<GSE ldInst="LD0" cbName="gcbStatus">')
     end = cid.index("</GSE>", start) + len("</GSE>")
@@ -241,3 +242,26 @@ async def test_one_call_disables_the_block_and_changes_its_data_set() -> None:
             await conn.disconnect()
     assert values.go_ena is False
     assert values.dat_set == DS_MEAS_REF
+
+
+async def test_a_gocb_without_a_communication_section_keeps_the_default_destination() -> None:
+    """Without a <Communication> section, as in an ICD, the block keeps the
+    default destination and can be enabled."""
+    cid = _demo.DEMO_CID.read_text(encoding="utf-8")
+    start = cid.index("<Communication>")
+    end = cid.index("</Communication>") + len("</Communication>")
+    server = IedServer.from_scl_str(cid[:start] + cid[end:], ied_name=_demo.IED_NAME)
+    server.bind("127.0.0.1:0")
+    assert server.gse_address("LD0", "gcbStatus") is None
+    assert server.connected_access_point("AP1") == []
+    server.register_from_model()
+    async with server:
+        conn = await IedConnection.connect(server.bound_addr)
+        try:
+            values = await conn.get_gocb_values(GOCB_IEC)
+            assert values.dst_address.addr == b"\x01\x0c\xcd\x01\x00\x00"
+            assert values.dst_address.app_id == 0
+            await conn.set_gocb_values(GOCB_IEC, go_ena=True)
+            assert (await conn.get_gocb_values(GOCB_IEC)).go_ena is True
+        finally:
+            await conn.disconnect()
