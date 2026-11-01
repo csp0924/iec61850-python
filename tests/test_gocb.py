@@ -1,8 +1,9 @@
 """Tests for the GOOSE control block client surface.
 
-A server hosted by this package registers no GOOSE control block, so the
-end-to-end cases cover the refusals of a server that holds none; the decoding
-of a populated GoCB is covered from the native mapping.
+The session `demo_server` registers no GOOSE control block, so the cases that
+use it cover the refusals of a server that holds none. The success path runs
+against a server that registers the model's `gcbStatus` with
+`register_from_model()`.
 """
 
 from __future__ import annotations
@@ -11,10 +12,72 @@ import pytest
 
 import _demo
 import iec61850
+from iec61850 import IedConnection, IedServer
 
 GOCB_IEC = f"{_demo.DOMAIN}/LLN0.gcbStatus"
 GOCB_MMS = f"{_demo.DOMAIN}/LLN0$GO$gcbStatus"
 
+
+
+def _gocb_server() -> IedServer:
+    """The demonstration IED on a free loopback port with every control block
+    of its model registered."""
+    server = IedServer.from_scl(_demo.DEMO_CID, ied_name=_demo.IED_NAME)
+    server.bind("127.0.0.1:0")
+    server.register_from_model()
+    return server
+
+
+@pytest.mark.parametrize("reference", [GOCB_IEC, GOCB_MMS])
+async def test_get_gocb_values_reads_the_registered_block(reference: str) -> None:
+    async with _gocb_server() as server:
+        conn = await IedConnection.connect(server.bound_addr)
+        try:
+            values = await conn.get_gocb_values(reference)
+        finally:
+            await conn.disconnect()
+    assert values.go_ena is False
+    assert values.go_id == "DemoIED/LLN0$GO$gcbStatus"
+    assert values.dat_set == f"{_demo.DOMAIN}/{_demo.DS_STATUS}"
+    assert values.conf_rev == 1
+    assert values.nds_com is False
+    assert values.fixed_offs is False
+    assert values.min_time_ms is not None
+    assert values.max_time_ms == 1000
+    assert 0 < values.min_time_ms <= values.max_time_ms
+
+
+async def test_set_gocb_values_enables_the_block_and_reads_back() -> None:
+    async with _gocb_server() as server:
+        conn = await IedConnection.connect(server.bound_addr)
+        try:
+            await conn.set_gocb_values(GOCB_IEC, go_id="renamed")
+            await conn.set_gocb_values(GOCB_IEC, go_ena=True)
+            enabled = await conn.get_gocb_values(GOCB_IEC)
+            await conn.set_gocb_values(GOCB_IEC, go_ena=False)
+            disabled = await conn.get_gocb_values(GOCB_MMS)
+        finally:
+            await conn.disconnect()
+    assert enabled.go_ena is True
+    assert enabled.go_id == "renamed"
+    assert enabled.dat_set == f"{_demo.DOMAIN}/{_demo.DS_STATUS}"
+    assert disabled.go_ena is False
+    assert disabled.go_id == "renamed"
+
+
+async def test_set_gocb_values_refuses_go_id_while_enabled() -> None:
+    async with _gocb_server() as server:
+        conn = await IedConnection.connect(server.bound_addr)
+        try:
+            await conn.set_gocb_values(GOCB_IEC, go_ena=True)
+            with pytest.raises(iec61850.IedDataAccessError) as excinfo:
+                await conn.set_gocb_values(GOCB_IEC, go_id="renamed")
+            values = await conn.get_gocb_values(GOCB_IEC)
+        finally:
+            await conn.disconnect()
+    assert excinfo.value.code == 2
+    assert values.go_ena is True
+    assert values.go_id == "DemoIED/LLN0$GO$gcbStatus"
 
 @pytest.mark.parametrize("reference", [GOCB_IEC, GOCB_MMS])
 async def test_get_gocb_values_of_unregistered_block_raises(
