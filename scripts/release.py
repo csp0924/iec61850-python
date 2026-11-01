@@ -25,7 +25,8 @@ Usage
     uv run python scripts/release.py --repository testpypi
 
 Stages (see main() for the exact order):
-  L1   pre-flight         refuse an sdist, clear stale wheels, check docker
+  L1   pre-flight         refuse a local cargo override or an sdist, clear
+                          stale wheels, check docker
   L1.5 PyPI duplicate     the same version already published aborts the run
   L1.7 pytest             the whole suite against the development install
   L2   build per platform RUSTFLAGS path remaps plus --strip
@@ -180,6 +181,16 @@ def stage_preflight(version: str, *, platforms: list[Platform]) -> None:
     info(f"package   = {PACKAGE_NAME}")
     info(f"version   = {version} (from {CARGO_TOML.relative_to(PROJECT)})")
     info(f"platforms = {', '.join(platforms)}")
+
+    local_override = PROJECT / ".cargo" / "config.toml"
+    if local_override.exists():
+        fail(
+            "refusing to proceed: .cargo/config.toml is present, so cargo may "
+            "resolve the iec61850-rust crates from a local checkout instead of "
+            "the tag Cargo.toml names. Delete .cargo/config.toml and Cargo.lock, "
+            "then rerun so the lock is resolved again from the tag."
+        )
+    info("no local cargo source override present")
 
     WHEELS_DIR.mkdir(parents=True, exist_ok=True)
 
