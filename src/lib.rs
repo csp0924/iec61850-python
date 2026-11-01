@@ -5966,7 +5966,10 @@ fn extract_bit_string_padding(
 /// ``utc_time`` (8 bytes) / ``binary_time`` (4 or 6 bytes) carry ``value``;
 /// ``bit_string`` carries ``data`` (bytes) and ``padding``, the number of
 /// unused trailing bits in the last octet (0..=7, and 0 when ``data`` is
-/// empty), which are cleared to zero; ``default`` carries nothing and
+/// empty), which are cleared to zero; ``structure`` carries ``value``, a
+/// ``list`` or ``tuple`` of the components in order, each a plain value or a
+/// tagged dict converted as ``write_object`` converts its value, so a
+/// component may itself be a structure; ``default`` carries nothing and
 /// resolves to the zero value of `default_for`, so it is refused when
 /// `default_for` is `None`.
 ///
@@ -6077,10 +6080,28 @@ fn tagged_value_to_mms_value(
             }
             Ok(RustMmsValue::BitString { padding, data })
         }
+        "structure" => {
+            let value = field("value")?;
+            let components: Vec<Bound<'_, PyAny>> = if let Ok(list) = value.cast::<PyList>() {
+                list.iter().collect()
+            } else if let Ok(tuple) = value.cast::<PyTuple>() {
+                tuple.iter().collect()
+            } else {
+                return Err(invalid("value", "a list or tuple of components"));
+            };
+            let mut items = Vec::with_capacity(components.len());
+            for (i, component) in components.iter().enumerate() {
+                items.push(py_value_to_mms_value_generic(
+                    component,
+                    &format!("{what}['value'][{i}]"),
+                )?);
+            }
+            Ok(RustMmsValue::Structure(items))
+        }
         other => Err(PyValueError::new_err(format!(
             "{what} has type '{other}', which is not supported \
              (allowed: bool, int, uint, float32, float64, visible_string, mms_string, \
-             octet_string, utc_time, binary_time, bit_string, default)"
+             octet_string, utc_time, binary_time, bit_string, structure, default)"
         ))),
     }
 }

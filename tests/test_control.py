@@ -276,6 +276,117 @@ async def test_operate_within_the_oper_timeout_succeeds() -> None:
     assert outcome.add_cause is None
 
 
+APC_REF = f"{_demo.DOMAIN}/GGIO1.APCSO1"
+APC_RECEIVED = [1.5]
+SET_MAG_REF = f"{_demo.DOMAIN}/GGIO1.SetMag1.setMag"
+
+
+def _analogue_scl() -> str:
+    """The demonstration CID plus an APC whose ctlVal is an AnalogueValue
+    holding `f`, and an ASG whose `setMag` is the same structure under FC=SP."""
+    text = _demo.DEMO_CID.read_text(encoding="utf-8")
+    replacements = [
+        (
+            '      <DO name="SPCSO1" type="SPC_T"/>\n',
+            '      <DO name="SPCSO1" type="SPC_T"/>\n'
+            '      <DO name="APCSO1" type="APC_T"/>\n'
+            '      <DO name="SetMag1" type="ASG_T"/>\n',
+        ),
+        (
+            '    <DOType id="SPC_T" cdc="SPC"',
+            """    <DOType id="APC_T" cdc="APC">
+      <DA name="Oper" fc="CO" bType="Struct" type="APCCmd_T"/>
+      <DA name="ctlModel" fc="CF" bType="Enum" type="CtlModelKind"/>
+      <DA name="origin" fc="ST" bType="Struct" type="Originator_T"/>
+      <DA name="ctlNum" fc="ST" bType="INT8U"/>
+      <DA name="mxVal" fc="MX" bType="Struct" type="AnalogValue_T"/>
+      <DA name="q" fc="MX" bType="Quality"/>
+      <DA name="t" fc="MX" bType="Timestamp"/>
+    </DOType>
+
+    <DOType id="ASG_T" cdc="ASG">
+      <DA name="setMag" fc="SP" bType="Struct" type="AnalogValue_T"/>
+    </DOType>
+
+    <DAType id="APCCmd_T">
+      <BDA name="ctlVal" bType="Struct" type="AnalogValue_T"/>
+      <BDA name="origin" bType="Struct" type="Originator_T"/>
+      <BDA name="ctlNum" bType="INT8U"/>
+      <BDA name="T" bType="Timestamp"/>
+      <BDA name="Test" bType="BOOLEAN"/>
+      <BDA name="Check" bType="Check"/>
+    </DAType>
+
+    <DOType id="SPC_T" cdc="SPC\"""",
+        ),
+        (
+            "          <LN prefix=\"\" lnClass=\"GGIO\" inst=\"1\" lnType=\"GGIO_T\">\n",
+            "          <LN prefix=\"\" lnClass=\"GGIO\" inst=\"1\" lnType=\"GGIO_T\">\n"
+            "            <DOI name=\"APCSO1\">\n"
+            "              <DAI name=\"ctlModel\"><Val>direct-with-normal-security</Val></DAI>\n"
+            "            </DOI>\n",
+        ),
+    ]
+    for old, new in replacements:
+        assert text.count(old) == 1, old
+        text = text.replace(old, new)
+    return text
+
+
+async def test_apc_operate_sends_the_analogue_value_structure() -> None:
+    received: list[object] = []
+    server = iec61850.IedServer.from_scl_str(_analogue_scl(), ied_name=_demo.IED_NAME)
+    server.bind("127.0.0.1:0")
+
+    def operate(_path: str, value: object, _action: dict) -> None:
+        received.append(value)
+
+    server.on_control(
+        f"{_demo.LD_INST}/GGIO1.APCSO1", ctl_model="direct-normal", operate=operate
+    )
+    async with server:
+        conn = await iec61850.IedConnection.connect(server.bound_addr)
+        try:
+            apc = conn.create_control_object(
+                APC_REF, iec61850.ControlModel.DIRECT_NORMAL
+            )
+            outcome = await apc.operate(
+                {"type": "structure", "value": [{"type": "float32", "value": 1.5}]}
+            )
+            assert outcome.success is True
+            for _ in range(150):
+                if received:
+                    break
+                await asyncio.sleep(0.02)
+        finally:
+            await conn.disconnect()
+    assert received == [APC_RECEIVED]
+
+
+async def test_structure_attribute_round_trips_through_write() -> None:
+    server = iec61850.IedServer.from_scl_str(_analogue_scl(), ied_name=_demo.IED_NAME)
+    server.bind("127.0.0.1:0")
+    async with server:
+        conn = await iec61850.IedConnection.connect(server.bound_addr)
+        try:
+            await conn.write(SET_MAG_REF, iec61850.FC.SP, {"type": "structure", "value": [2.5]})
+            assert await conn.read_float(f"{SET_MAG_REF}.f", iec61850.FC.SP) == 2.5
+            await conn.write(
+                SET_MAG_REF,
+                iec61850.FC.SP,
+                {"type": "structure", "value": ({"type": "float32", "value": -4.0},)},
+            )
+            assert await conn.read_float(f"{SET_MAG_REF}.f", iec61850.FC.SP) == -4.0
+            with pytest.raises(ValueError, match="a list or tuple of components"):
+                await conn.write(SET_MAG_REF, iec61850.FC.SP, {"type": "structure", "value": 2.5})
+            with pytest.raises(ValueError, match=r"\['value'\]\[0\]"):
+                await conn.write(
+                    SET_MAG_REF, iec61850.FC.SP, {"type": "structure", "value": [None]}
+                )
+        finally:
+            await conn.disconnect()
+
+
 def test_blocked_by_command_keeps_its_former_name() -> None:
     cause = iec61850.ControlAddCause
     assert cause.ABORTION_BY_COMMAND is cause.BLOCKED_BY_COMMAND
