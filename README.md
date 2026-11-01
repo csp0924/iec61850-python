@@ -1078,7 +1078,7 @@ the type it names.
 | ENC        | ENUMERATED                       | `int`                                                           |
 | ISC        | INT8                             | `int`                                                           |
 | BSC, BAC   | CODED ENUM (stop, lower, higher) | `{"type": "bit_string", "padding": 6, "data": b"\x40"}` (lower) |
-| APC        | AnalogueValue (a structure)      | not supported (see below)                                       |
+| APC        | AnalogueValue (a structure)      | `{"type": "structure", "value": [{"type": "float32", "value": 1.5}]}` |
 
 A double point control takes a `bool`, like a single point one; an `int`
 is sent as an INTEGER, which a server that checks the type refuses:
@@ -1091,9 +1091,19 @@ if await dpc.select_with_value(True):    # True closes, False opens
     outcome = await dpc.operate(True)
 ```
 
-An APC's `ctlVal` is an AnalogueValue structure. The control methods have no
-form for a structure, and a `float` goes out as a lone FLOAT32, which a server
-that checks the type refuses.
+An APC's `ctlVal` is an AnalogueValue structure; send it as a tagged
+structure whose elements follow the server's declaration, here `f` alone. A
+bare `float` goes out as a lone FLOAT32, which a server that checks the type
+refuses:
+
+```python
+apc = conn.create_control_object(
+    "IED1LD0/GGIO1.AnOut1", iec61850.ControlModel.DIRECT_NORMAL
+)
+await apc.operate(
+    {"type": "structure", "value": [{"type": "float32", "value": 1.5}]}
+)
+```
 
 ## GOOSE control blocks
 

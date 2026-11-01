@@ -77,9 +77,11 @@ from ._native import query_sntp as _native_query_sntp
 async def query_sntp(server: str, timeout_s: float = 3.0) -> SntpResponse:
     """Query an SNTP/NTP server and return a typed :class:`SntpResponse`.
 
-    See :class:`SntpResponse` for field semantics. The default ``timeout_s`` of
-    3.0 seconds matches typical NTP wait budgets; raise it for high-latency or
-    constrained-link IED deployments.
+    ``server`` is an IP address and port, ``"192.0.2.10:123"`` or
+    ``"[2001:db8::1]:123"``; a host name is not resolved and raises
+    ``ValueError``. See :class:`SntpResponse` for field semantics. The default
+    ``timeout_s`` of 3.0 seconds matches typical NTP wait budgets; raise it for
+    high-latency or constrained-link IED deployments.
     """
     raw: dict[str, Any] = await _native_query_sntp(server, timeout_s)
     return SntpResponse.from_native(raw)

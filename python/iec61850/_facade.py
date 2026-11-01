@@ -339,9 +339,11 @@ class ControlObjectClient:
     """``select`` / ``operate`` / ``cancel`` for a single controllable DO.
 
     Construct via :py:meth:`IedConnection.create_control_object`. The control
-    payload type follows the underlying CDC: ``bool`` for SPC, ``int`` for
-    DPC / INC / ENC, ``float`` for APC. A tagged ``dict``, the form ``write``
-    takes, sends any other MMS type.
+    value must encode as the ``ctlVal`` type of the CDC (IEC 61850-7-3 §7.5):
+    ``bool`` for SPC and DPC (BOOLEAN), ``int`` for INC (INT32), ENC
+    (ENUMERATED) and ISC (INT8), and a tagged ``bit_string`` dict, the form
+    ``write`` takes, for the CODED ENUM of BSC and BAC. APC takes the
+    AnalogueValue structure as ``{"type": "structure", "value": [...]}``.
     """
 
     __slots__ = ("_native",)

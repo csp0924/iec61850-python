@@ -16,7 +16,7 @@ from ._enums import FC, ControlAddCause, TlsVersion, Validity
 
 @dataclass(frozen=True, slots=True)
 class TriggerOptions:
-    """RCB trigger conditions (TrgOps, IEC 61850-7-2 §17.2.3.2.4)."""
+    """RCB trigger conditions (TrgOps, IEC 61850-7-2 §17.2.2.11)."""
 
     data_change: bool = False
     quality_change: bool = False
@@ -47,7 +47,7 @@ class TriggerOptions:
 
 @dataclass(frozen=True, slots=True)
 class ReportOptFlds:
-    """RCB optional fields (OptFlds, IEC 61850-7-2 §17.2.3.2.5)."""
+    """RCB optional fields (OptFlds, IEC 61850-7-2 §17.2.2.8)."""
 
     sequence_number: bool = False
     report_timestamp: bool = False
@@ -194,7 +194,7 @@ class TimeQuality:
 
 @dataclass(frozen=True, slots=True)
 class InclusionReason:
-    """Reason a member was included in a report (IEC 61850-7-2 §17.2.3.2.6)."""
+    """Reason a member was included in a report (ReasonCode, IEC 61850-7-2 §17.2.3.2.2.9)."""
 
     data_change: bool = False
     quality_change: bool = False
@@ -283,7 +283,7 @@ class ClientReport:
 
 @dataclass(frozen=True, slots=True)
 class OriginValue:
-    """``origin`` DA payload (IEC 61850-7-2 §17.2.5)."""
+    """``origin`` DA payload (Originator, IEC 61850-7-3 §6.8)."""
 
     or_cat: int = 3  # default: bay-control
     or_ident: bytes = b""
@@ -298,7 +298,7 @@ class OriginValue:
 @dataclass(frozen=True, slots=True)
 class LastApplError:
     """``LastApplError`` the server reported for a refused or failed control
-    command (IEC 61850-8-1 §20.11, IEC 61850-7-2 §20.1.4).
+    command (IEC 61850-8-1 §20.11, IEC 61850-7-2 §20.5.2.9).
 
     ``error`` is the ``Error`` value as a token: ``"no-error"``,
     ``"unknown"``, ``"timeout-test-not-ok"`` or ``"operator-test-not-ok"``.

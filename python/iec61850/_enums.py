@@ -78,7 +78,7 @@ class SboClass(StrEnum):
 
 
 class ControlAddCause(StrEnum):
-    """Reason a control action was rejected (IEC 61850-7-2 §20.1.4).
+    """Reason a control action was rejected (AddCause, IEC 61850-7-2 §20.5.2.9).
 
     ``ABORTION_BY_COMMAND`` is an alias of ``BLOCKED_BY_COMMAND`` (value 24),
     and the token ``"abortion-by-command"`` still parses to it.
